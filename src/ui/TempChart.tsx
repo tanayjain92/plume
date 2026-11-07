@@ -11,6 +11,35 @@ export function fmtClock(t: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+/** Room on the right of the plot for the end-of-line tags, px. */
+const END_LABEL_W = 96;
+
+/** Tag each line at its right end with its name and latest value, nudged apart so they don't overlap. */
+function drawEndLabels(u: uPlot, last: (u: uPlot, si: number) => number | null, fmt: (v: number | null) => string): void {
+  const ctx = u.ctx;
+  const dpr = devicePixelRatio || 1;
+  const tags: { y: number; text: string; color: string; dash: boolean }[] = [];
+  u.series.forEach((s, si) => {
+    if (si === 0 || !s.show) return;
+    const v = last(u, si);
+    if (v == null) return;
+    tags.push({ y: u.valToPos(v, 'y', true), text: `${s.label} ${fmt(v)}`, color: String(s.stroke && typeof s.stroke === 'function' ? s.stroke(u, si) : s.stroke), dash: Boolean(s.dash) });
+  });
+  tags.sort((a, b) => a.y - b.y);
+  const gap = 14 * dpr;
+  for (let i = 1; i < tags.length; i++) if (tags[i].y - tags[i - 1].y < gap) tags[i].y = tags[i - 1].y + gap;
+  const x = u.bbox.left + u.bbox.width + 6 * dpr;
+  ctx.save();
+  ctx.font = `${11 * dpr}px Inter, Segoe UI, system-ui, sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  for (const t of tags) {
+    ctx.fillStyle = t.color;
+    ctx.fillText(t.text, x, t.y);
+  }
+  ctx.restore();
+}
+
 const COLORS = { mean: '#e7e9ee', floor: '#67a9cf', ceiling: '#ef8a62', outdoor: '#9097a7', setpoint: '#5aa9ff' };
 
 /** Live chart of room temperature over room time (average, floor, ceiling, outdoor, setpoint). */
@@ -24,26 +53,36 @@ export function TempChart(props: { samples: TempSample[]; version: number; units
     const el = wrapRef.current;
     if (!el) return;
     const deg = units === 'imperial' ? '°F' : '°C';
-    const fmt = (v: number | null) => (v == null ? '–' : `${v.toFixed(1)}${deg}`);
+    const fmt = (v: number | null | undefined) => (v == null ? '–' : `${v.toFixed(1)}${deg}`);
+    /** Latest non-null value of a series. */
+    const last = (u: uPlot, si: number): number | null => {
+      const d = u.data[si] as (number | null)[];
+      for (let i = d.length - 1; i >= 0; i--) if (d[i] != null) return d[i];
+      return null;
+    };
+    // Legend: the hovered point, or the latest value when the cursor is off the chart.
+    const legendVal = (u: uPlot, v: number | null, si: number, idx: number | null) => fmt(idx == null ? last(u, si) : v);
     const axis = { stroke: '#9097a7', grid: { stroke: '#2e3340', width: 1 }, ticks: { stroke: '#2e3340', width: 1 } };
     const plot = new uPlot(
       {
         width: Math.max(200, el.clientWidth),
         height: 220,
         legend: { live: true },
+        padding: [12, END_LABEL_W, 0, 0],
+        hooks: { draw: [(u) => drawEndLabels(u, last, fmt)] },
         cursor: { drag: { x: false, y: false } },
         scales: { x: { time: false } },
         axes: [
           { ...axis, incrs: [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400], label: 'room time', labelSize: 18, values: (_, ticks) => ticks.map(fmtClock) },
-          { ...axis, values: (_, ticks) => ticks.map((t) => `${t.toFixed(ticks.length > 1 && Math.abs(ticks[1] - ticks[0]) < 1 ? 1 : 0)}°`), size: 50 },
+          { ...axis, label: `temperature (${deg})`, labelSize: 18, values: (_, ticks) => ticks.map((t) => `${t.toFixed(ticks.length > 1 && Math.abs(ticks[1] - ticks[0]) < 1 ? 1 : 0)}°`), size: 50 },
         ],
         series: [
           { label: 'Room time', value: (_, v) => (v == null ? '–' : fmtClock(v)) },
-          { label: 'Average', stroke: COLORS.mean, width: 2, points: { show: false }, value: (_, v) => fmt(v) },
-          { label: 'Floor', stroke: COLORS.floor, width: 1, points: { show: false }, value: (_, v) => fmt(v) },
-          { label: 'Ceiling', stroke: COLORS.ceiling, width: 1, points: { show: false }, value: (_, v) => fmt(v) },
-          { label: 'Outdoor', stroke: COLORS.outdoor, width: 1, dash: [6, 4], points: { show: false }, value: (_, v) => fmt(v) },
-          { label: 'Setpoint', stroke: COLORS.setpoint, width: 1, dash: [3, 3], points: { show: false }, value: (_, v) => fmt(v) },
+          { label: 'Average', stroke: COLORS.mean, width: 2, points: { show: false }, value: legendVal },
+          { label: 'Floor', stroke: COLORS.floor, width: 1, points: { show: false }, value: legendVal },
+          { label: 'Ceiling', stroke: COLORS.ceiling, width: 1, points: { show: false }, value: legendVal },
+          { label: 'Outdoor', stroke: COLORS.outdoor, width: 1, dash: [6, 4], points: { show: false }, value: legendVal },
+          { label: 'Setpoint', stroke: COLORS.setpoint, width: 1, dash: [3, 3], points: { show: false }, value: legendVal },
         ],
       },
       [[], [], [], [], [], []],

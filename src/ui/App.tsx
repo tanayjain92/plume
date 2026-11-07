@@ -108,7 +108,12 @@ export function App() {
         case 'ready':
           setGrid(msg.grid);
           setWarnings(msg.warnings);
-          if (msg.restarted) setSolverLog([]);
+          if (msg.restarted) {
+            setSolverLog([]);
+            // A fresh run (Reset, Auto start temperature, new scene): drop the old run's history.
+            tempHistory.current.clear();
+            energyWindow.current.clear();
+          }
           break;
         case 'frame':
           setFrame(msg);
