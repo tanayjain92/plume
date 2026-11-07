@@ -2,7 +2,7 @@
 
 Plume is a room airflow and heat simulator. **`SPEC.md` is the source of truth**: read it before changing anything.
 
-**Target: Windows desktop app.** The code stays a TypeScript web app (it runs in `npm run dev` in Chrome/Edge), later wrapped in a desktop shell (Electron or Tauri, not yet chosen). Don't add browser-only assumptions that a desktop shell would break, and don't add the shell until that decision is made.
+**Target: Windows desktop app.** The code stays a TypeScript web app (it runs in `npm run dev` in Chrome/Edge), wrapped in a **Tauri** desktop shell (chosen 2026-11-07: the user wanted the best lightweight option; not added yet, it needs Rust + MSVC build tools on the machine). The same build is published to GitHub Pages (`.github/workflows/pages.yml`, Vite `base: './'`). Don't add browser-only assumptions that a desktop shell would break.
 
 ## Status
 

@@ -23,6 +23,16 @@ export interface SceneV1 {
    * don't conduct, no air leaks), which is what older scene files get.
    */
   envelope?: Envelope;
+  /** Where and when, for filling weather and sun automatically. Top of the plan is north. */
+  site?: SiteInfo;
+}
+
+export interface SiteInfo {
+  name: string;
+  lat: number;
+  lon: number;
+  /** Local time at the site, "YYYY-MM-DDTHH:00". Missing = now. */
+  when?: string;
 }
 
 export interface Envelope {
@@ -51,6 +61,8 @@ export interface Wall {
 
 export interface Opening {
   id: string;
+  /** Display color, #rrggbb (editor only). */
+  color?: string;
   type: 'window';
   room: string;
   edge: number;
@@ -76,6 +88,8 @@ export interface Door {
 interface DeviceBase {
   id: string;
   enabled: boolean;
+  /** Display color, #rrggbb (editor only; no effect on the physics). Missing = the default for its type. */
+  color?: string;
 }
 
 /** Volumetric heat in an axis-aligned box. pos = center of the box's bottom face. */

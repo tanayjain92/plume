@@ -35,7 +35,7 @@ export function TempChart(props: { samples: TempSample[]; version: number; units
         scales: { x: { time: false } },
         axes: [
           { ...axis, incrs: [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400], label: 'room time', labelSize: 18, values: (_, ticks) => ticks.map(fmtClock) },
-          { ...axis, values: (_, ticks) => ticks.map((t) => `${t.toFixed(0)}°`), size: 44 },
+          { ...axis, values: (_, ticks) => ticks.map((t) => `${t.toFixed(ticks.length > 1 && Math.abs(ticks[1] - ticks[0]) < 1 ? 1 : 0)}°`), size: 50 },
         ],
         series: [
           { label: 'Room time', value: (_, v) => (v == null ? '–' : fmtClock(v)) },

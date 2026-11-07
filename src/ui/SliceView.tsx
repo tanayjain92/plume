@@ -41,6 +41,8 @@ export interface Glyph {
   /** Draw an arrow from the center to this point instead of the dir arrow (the sun). */
   arrowTo?: [number, number];
   round?: boolean;
+  /** Shaded solid (the user picked a color for it). */
+  filled?: boolean;
   /** Always-visible value tag next to the glyph (sensor readings). */
   badge?: string;
 }
@@ -439,7 +441,7 @@ export function SliceView(props: Props) {
         ctx.lineWidth = gl.selected ? 2.5 : 1.5;
         if (gl.round) {
           const r = Math.max(w, hgt) / 2;
-          ctx.fillStyle = gl.color + '99';
+          ctx.fillStyle = gl.color + (gl.filled ? 'e0' : '99');
           ctx.beginPath();
           ctx.arc(x0 + w / 2, y0 + hgt / 2, r, 0, Math.PI * 2);
           ctx.fill();
@@ -453,7 +455,7 @@ export function SliceView(props: Props) {
           }
           ctx.stroke();
         } else {
-          ctx.fillStyle = gl.color + '33';
+          ctx.fillStyle = gl.color + (gl.filled ? 'c0' : '33');
           ctx.fillRect(x0, y0, w, hgt);
           ctx.strokeRect(x0, y0, w, hgt);
         }

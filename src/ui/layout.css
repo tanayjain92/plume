@@ -498,3 +498,120 @@ details.color-settings {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---------- object shading ---------- */
+.shade-menu {
+  position: relative;
+}
+.shade-menu > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.shade-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.swatch {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background-image: linear-gradient(45deg, transparent 45%, #ff6b6b 45%, #ff6b6b 55%, transparent 55%);
+}
+.shade-menu > summary .swatch[style*='rgb'],
+.shade-pop .swatch {
+  background-image: none;
+}
+.swatch.on {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 1px;
+}
+.shade-pop {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: repeat(5, 22px);
+  gap: 6px;
+  padding: 8px;
+  background: rgba(26, 29, 37, 0.98);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+.shade-pop .swatch {
+  width: 22px;
+  height: 22px;
+  cursor: pointer;
+}
+.shade-pop .custom {
+  position: relative;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--panel-2);
+}
+.shade-pop .custom input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.shade-pop .link {
+  grid-column: 1 / -1;
+  text-align: left;
+}
+
+/* ---------- Auto (weather) ---------- */
+.with-auto {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.auto-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: 999px;
+}
+.site-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+.site-current {
+  display: flex;
+  flex-direction: column;
+}
+.site-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.site-results .link {
+  text-align: left;
+}
+.ok-text {
+  color: var(--ok);
+}
+.field:has(.with-auto) {
+  grid-template-columns: 1fr 170px;
+}
+.with-auto .numfield {
+  flex: 1;
+  min-width: 0;
+}
+.with-auto .numfield .unit {
+  min-width: 24px;
+}

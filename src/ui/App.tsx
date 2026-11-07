@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { hasHeading, placeTool, TOOLS, type ToolKind } from '../scene/defaults';
 import { aimArrow, dragHandle, handlesFor, removeItem, resizeWindow, SUN_ARROW, sunlightId, toggleWindow } from '../scene/editing';
 import { sunPatches } from '../scene/solar';
+import { autoRoomTemp } from '../scene/weather';
 import { EnergyPanel } from './EnergyPanel';
 import { EnergyWindow, TempHistory } from './history';
 import { TempChart } from './TempChart';
@@ -49,6 +50,9 @@ const GLYPH_COLORS: Record<DeviceShape['kind'], string> = {
   ceiling_fan: '#c5e1a5',
   tower_fan: '#c5e1a5',
 };
+
+/** Colors offered for shading objects. */
+const SHADES = ['#e53935', '#fb8c00', '#fdd835', '#43a047', '#1e88e5', '#8e24aa', '#f06292', '#8d6e63', '#eceff1'];
 
 type ViewMode = 'top' | 'side';
 type Drag =
@@ -191,6 +195,12 @@ export function App() {
     lastEditAt.current = now;
     setScene(next);
   };
+  // Auto starting temperature: start where the room settles, and restart the run so it applies now.
+  const autoRoomTempNow = () => {
+    if (!scene) return;
+    keepStateRef.current = false;
+    editScene({ ...scene, rooms: scene.rooms.map((r, i) => (i === 0 ? { ...r, initialTemp: autoRoomTemp(scene) } : r)) });
+  };
   const undo = () => {
     const prev = undoStack.current.pop();
     if (!prev) return;
@@ -326,6 +336,8 @@ export function App() {
     return [origin[0] + a * h, origin[1] + b * h];
   };
 
+  const colorOf = (id: string): string | undefined => scene.devices.find((d) => d.id === id)?.color ?? scene.openings.find((o) => o.id === id)?.color;
+
   const toGlyphs = (shapes: DeviceShape[], ghostId?: string): Glyph[] => {
     if (!grid) return [];
     const { h, origin } = grid;
@@ -345,7 +357,8 @@ export function App() {
         b1: (s.hi[ax[1]] - origin[ax[1]]) / h,
         dir: s.dir ? [s.dir[ax[0]], s.dir[ax[1]]] : undefined,
         intake: s.intake,
-        color: GLYPH_COLORS[s.kind],
+        color: colorOf(s.id) ?? GLYPH_COLORS[s.kind],
+        filled: Boolean(colorOf(s.id)),
         label: s.id,
         selected: s.id === selected,
         faded: !s.enabled || !crosses,
@@ -505,6 +518,32 @@ export function App() {
   const selWindow = scene.openings.find((o) => o.id === selected);
   const selDevice = scene.devices.find((d) => d.id === selected);
   const setDev = (next: Device) => editScene({ ...scene, devices: scene.devices.map((d) => (d.id === next.id ? next : d)) });
+  const setColor = (id: string, color: string | undefined) =>
+    editScene({
+      ...scene,
+      devices: scene.devices.map((d) => (d.id === id ? { ...d, color } : d)),
+      openings: scene.openings.map((o) => (o.id === id ? { ...o, color } : o)),
+    });
+  const selColor = selDevice?.color ?? selWindow?.color;
+  const colorMenu = (selDevice || selWindow) && (
+    <details className="shade-menu">
+      <summary title="Shade this object with a color">
+        <span className="swatch" style={{ background: selColor ?? 'transparent' }} />
+      </summary>
+      <div className="shade-pop">
+        {SHADES.map((c) => (
+          <button key={c} className={`swatch ${selColor === c ? 'on' : ''}`} style={{ background: c }} title={c} onClick={() => setColor(selected!, c)} />
+        ))}
+        <label className="swatch custom" title="Any color">
+          +
+          <input type="color" value={selColor ?? '#ffffff'} onChange={(e) => setColor(selected!, e.target.value)} />
+        </label>
+        <button className="link small" onClick={() => setColor(selected!, undefined)}>
+          No fill
+        </button>
+      </div>
+    </details>
+  );
   const selSunlight = selected?.startsWith('sunlight:') ? selected.split(':') : null;
   const anchor = selGlyph?.poly
     ? { a: Math.min(...selGlyph.poly.map((q) => q[0])), b: Math.max(...selGlyph.poly.map((q) => q[1])) }
@@ -574,6 +613,7 @@ export function App() {
                   )}
                 </>
               )}
+              {colorMenu}
               <button
                 className="danger"
                 title="Remove (Delete key)"
@@ -849,7 +889,7 @@ export function App() {
         )}
       </main>
 
-      <ControlsPanel scene={scene} units={units} tool={tool} onTool={pickTool} selected={selected} onSelect={setSelected} onChange={editScene} onRedefine={() => setShowSetup(true)} readings={readings} />
+      <ControlsPanel scene={scene} units={units} tool={tool} onTool={pickTool} selected={selected} onSelect={setSelected} onChange={editScene} onRedefine={() => setShowSetup(true)} readings={readings} onAutoRoomTemp={autoRoomTempNow} />
       {notice && <div className="toast">{notice}</div>}
     </div>
   );

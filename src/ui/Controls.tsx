@@ -5,6 +5,8 @@ import type { Device, Opening, SceneV1 } from '../scene/types';
 import { deviceFields, Fields, NumberField, windowFields } from './Editor';
 import { floorFraction, sunPatches } from '../scene/solar';
 import { fmtLength, fmtPower, fmtSpeed, fmtTemp, quantity, type UnitSystem } from './units';
+import type { WeatherField } from '../scene/weather';
+import { SiteBox, useAutoWeather } from './WeatherControls';
 
 export interface SensorReading {
   T: number;
@@ -62,8 +64,16 @@ export function ControlsPanel(props: {
   onChange: (s: SceneV1) => void;
   onRedefine: () => void;
   readings: Record<string, SensorReading>;
+  /** Start the room at its predicted settled temperature (restarts the run). */
+  onAutoRoomTemp: () => void;
 }) {
   const { scene, units, tool, selected } = props;
+  const auto = useAutoWeather(scene, props.onChange, units);
+  const autoBtn = (fields: WeatherField[], what: string) => (
+    <button className="auto-btn" disabled={auto.busy} onClick={() => auto.fill(fields)} title={`Fill ${what} from the weather at your location`}>
+      Auto
+    </button>
+  );
   const room = scene.rooms[0];
   const selDevice = scene.devices.find((d) => d.id === selected);
   const selWindow = scene.openings.find((o) => o.id === selected);
@@ -194,24 +204,39 @@ export function ControlsPanel(props: {
         <div className="fields">
           <label className="field">
             <span>Room starts at</span>
-            <NumberField value={room.initialTemp} q="temp" units={units} onChange={(v) => props.onChange({ ...scene, rooms: [{ ...room, initialTemp: v }] })} />
+            <span className="with-auto">
+              <NumberField value={room.initialTemp} q="temp" units={units} onChange={(v) => props.onChange({ ...scene, rooms: [{ ...room, initialTemp: v }] })} />
+              <button className="auto-btn" onClick={props.onAutoRoomTemp} title="Start the room where it would settle with the current settings, and restart the run">
+                Auto
+              </button>
+            </span>
           </label>
           <label className="field">
             <span>Outside</span>
-            <NumberField value={scene.outdoor.temp} q="temp" units={units} onChange={(v) => props.onChange({ ...scene, outdoor: { ...scene.outdoor, temp: v } })} />
+            <span className="with-auto">
+              <NumberField value={scene.outdoor.temp} q="temp" units={units} onChange={(v) => props.onChange({ ...scene, outdoor: { ...scene.outdoor, temp: v } })} />
+              {autoBtn(['temp'], 'the outside temperature')}
+            </span>
           </label>
           <label className="field">
             <span>Wind speed</span>
-            <NumberField value={scene.outdoor.windSpeed} q="wind" units={units} min={0} onChange={(v) => props.onChange({ ...scene, outdoor: { ...scene.outdoor, windSpeed: v } })} />
+            <span className="with-auto">
+              <NumberField value={scene.outdoor.windSpeed} q="wind" units={units} min={0} onChange={(v) => props.onChange({ ...scene, outdoor: { ...scene.outdoor, windSpeed: v } })} />
+              {autoBtn(['windSpeed'], 'the wind speed')}
+            </span>
           </label>
           <label className="field">
             <span>Wind from (0° = top of plan)</span>
-            <NumberField value={scene.outdoor.windFrom} q="deg" units={units} onChange={(v) => props.onChange({ ...scene, outdoor: { ...scene.outdoor, windFrom: ((v % 360) + 360) % 360 } })} />
+            <span className="with-auto">
+              <NumberField value={scene.outdoor.windFrom} q="deg" units={units} onChange={(v) => props.onChange({ ...scene, outdoor: { ...scene.outdoor, windFrom: ((v % 360) + 360) % 360 } })} />
+              {autoBtn(['windFrom'], 'the wind direction')}
+            </span>
           </label>
         </div>
+        <SiteBox scene={scene} onChange={props.onChange} auto={auto} />
         <Insulation scene={scene} onChange={props.onChange} />
         <p className="muted small">
-          Ceiling {fmtLength(room.height, units)}. Floor and ceiling are treated as not losing heat (rooms above and below). The starting temperature applies on Reset; wind only matters with an open window.
+          Ceiling {fmtLength(room.height, units)}. Floor and ceiling are treated as not losing heat (rooms above and below). The starting temperature applies on Reset (Auto restarts for you); wind only matters with an open window.
         </p>
         <div className="row-buttons">
           <button onClick={props.onRedefine}>Redefine space…</button>

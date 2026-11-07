@@ -1,6 +1,6 @@
 # Plume
 
-Room airflow and heat simulator, targeting a **Windows desktop app** (web app wrapped in Electron or Tauri; shell not chosen yet, decide by phase 4). The build spec is `SPEC.md`: read it before starting a phase. Repo: https://github.com/tanayjain92/plume (branch `main`).
+Room airflow and heat simulator, targeting a **Windows desktop app** (web app wrapped in Tauri, chosen 2026-11-07) plus the same app on GitHub Pages. The build spec is `SPEC.md`: read it before starting a phase. Repo: https://github.com/tanayjain92/plume (branch `main`).
 
 The project rules live in AGENTS.md so every coding agent reads the same file. They are imported here:
 
@@ -33,6 +33,12 @@ Verified in headless Chrome: every device type changes the flow visibly; window 
 - **Heater energy test passes by construction** and runs only 10 s; **symmetry tolerance** (1e-4 relative) was never measured and tightened.
 - **Slice snapping:** slices snap to cell centers.
 - Fixed device sizes (window AC 0.6 × 0.4 m, mini split head, portable AC body, tower fan slot) live in `DIMS` in `src/scene/geometry.ts`.
+
+## Since phase 3 (user requests, 2026-11-07)
+
+- **Object colors:** optional `color` (#rrggbb) on devices and openings, editor only; swatch menu in the action bar shades the glyph solid.
+- **Auto fields:** `src/scene/weather.ts` (pure: NOAA sun position, Open-Meteo URL building and parsing, `applyWeather`, `autoRoomTemp` = predicted settled temperature) and `src/ui/openMeteo.ts` (fetch + cache). Scene `site` = {name, lat, lon, when?}; top of plan = north. Auto on room temp restarts the run (keepState false). Needs internet; Tauri will need a CSP/allowlist entry for `*.open-meteo.com`.
+- **GitHub Pages:** one-time manual step: repo Settings → Pages → Source: GitHub Actions.
 
 ## Phase 3 leftovers
 
