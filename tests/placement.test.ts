@@ -30,6 +30,7 @@ describe('click-to-place tools', () => {
       person: [2.0, 2.4],
       heater: [0.5, 0.5],
       computer: [3.2, 3.2],
+      sensor: [2.5, 1.0],
     };
     for (const t of TOOLS) scene = place(scene, t.kind, ...spots[t.kind]).scene;
     const { voxels, warnings } = voxelize(scene);

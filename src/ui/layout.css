@@ -392,3 +392,109 @@ details.color-settings {
     border-top: 1px solid var(--line);
   }
 }
+
+/* ---------- prediction + sensors ---------- */
+.predict-main {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(280px, 1.2fr);
+  gap: 20px;
+}
+.predict-temp {
+  font-size: 18px;
+  margin: 4px 0 2px;
+}
+.predict-temp b {
+  font-size: 24px;
+}
+.predict-ac {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.predict-ac.ok {
+  color: var(--ok);
+}
+.predict-ac.warn {
+  color: var(--accent-2);
+}
+.flows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.flow-row {
+  display: grid;
+  grid-template-columns: 130px 1fr 90px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.flow-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.flow-bar {
+  height: 8px;
+  background: var(--panel-2);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.flow-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+}
+.flow-bar .in {
+  background: #ef8a62;
+}
+.flow-bar .out {
+  background: #67a9cf;
+}
+.flow-val {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.sensor-reading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sensor-reading b {
+  font-size: 24px;
+}
+@media (max-width: 1100px) {
+  .predict-main {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- phase 3: chart + energy balance ---------- */
+.history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(300px, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+.chart-panel {
+  min-width: 0;
+}
+.temp-chart {
+  width: 100%;
+}
+.temp-chart .u-legend {
+  font-size: 12px;
+  color: var(--muted);
+}
+.flow-row.net {
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+  margin-top: 2px;
+  font-weight: 600;
+}
+@media (max-width: 1100px) {
+  .history-row {
+    grid-template-columns: 1fr;
+  }
+}

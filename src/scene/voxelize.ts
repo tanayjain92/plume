@@ -14,6 +14,8 @@ import {
   CFM_TO_M3S,
   DIMS,
   edgeFrame,
+  FAN_MOTOR_W,
+  nearestEdge,
   headingBox,
   headingDir,
   normalize,
@@ -247,6 +249,8 @@ export function voxelize(scene: SceneV1): VoxelizeResult {
 
   // Openings: open windows become open cells (unless an AC fills the window).
   let closedWindows = 0;
+  /** Wall cells that are closed glass (or an AC filling a window), with their U-value. */
+  const glassU = new Map<number, number>();
   for (const op of scene.openings) {
     const room = roomById.get(op.room);
     if (!room) {
@@ -259,6 +263,7 @@ export function voxelize(scene: SceneV1): VoxelizeResult {
     }
     if (op.state !== 'open' || acWindows.has(op.id)) {
       closedWindows++;
+      for (const c of openingCells(room, op)) if (cellType[c] === CellType.Solid) glassU.set(c, op.glazingU ?? 2.8);
       continue;
     }
     const cells = openingCells(room, op).filter((c) => cellType[c] === CellType.Solid);
@@ -292,6 +297,11 @@ export function voxelize(scene: SceneV1): VoxelizeResult {
   const ports: FlowPort[] = [];
   const fans: FanForce[] = [];
   const acUnits: AcUnit[] = [];
+  /** Fan motor heat goes into the air the fan moves. */
+  const addFanHeat = (id: string, type: keyof typeof FAN_MOTOR_W, enabled: boolean, inside: (p: Vec3) => boolean) => {
+    const cells = g.cellsWhere((p, c) => cellType[c] === CellType.Fluid && inside(p));
+    if (cells.length) heatSources.push({ id: `${id} motor`, kind: 'fan', cells: Int32Array.from(cells), watts: FAN_MOTOR_W[type], enabled });
+  };
   const addPort = (p: FlowPort, what: string): boolean => {
     if (p.faces.length === 0) {
       warnings.push(`${what} has no wall, floor or ceiling face to attach to; ignored`);
@@ -346,6 +356,7 @@ export function voxelize(scene: SceneV1): VoxelizeResult {
           landed++;
           heatSources.push({
             id: `${dev.id} via ${patch.windowId}`,
+            kind: "sun",
             cells: Int32Array.from(cells),
             watts: patch.floorWm2 * cells.length * h * h,
             enabled: dev.enabled,
@@ -377,7 +388,7 @@ export function voxelize(scene: SceneV1): VoxelizeResult {
           warnings.push(`sun patch "${dev.id}" is outside the room; ignored`);
           break;
         }
-        heatSources.push({ id: dev.id, cells: Int32Array.from(cells), watts: dev.wm2 * cells.length * h * h, enabled: dev.enabled });
+        heatSources.push({ id: dev.id, kind: "sun", cells: Int32Array.from(cells), watts: dev.wm2 * cells.length * h * h, enabled: dev.enabled });
         break;
       }
 
@@ -404,7 +415,7 @@ export function voxelize(scene: SceneV1): VoxelizeResult {
         }
         sup.enabled = ret.enabled = dev.enabled;
         ports.push(sup, ret);
-        acUnits.push({ id: dev.id, supplyPort: sup.id, returnPort: ret.id, sensibleW: dev.capacityBtuh * dev.shr * BTUH_TO_W, enabled: dev.enabled });
+        acUnits.push({ id: dev.id, supplyPort: sup.id, returnPort: ret.id, sensibleW: dev.capacityBtuh * dev.shr * BTUH_TO_W, setpoint: dev.setpoint, enabled: dev.enabled });
         break;
       }
 
@@ -450,7 +461,7 @@ export function voxelize(scene: SceneV1): VoxelizeResult {
           break;
         }
         sup.enabled = ret.enabled = dev.enabled;
-        acUnits.push({ id: dev.id, supplyPort: sup.id, returnPort: ret.id, sensibleW: dev.capacityBtuh * (dev.type === 'mini_split' ? 0.7 : dev.shr) * BTUH_TO_W, enabled: dev.enabled });
+        acUnits.push({ id: dev.id, supplyPort: sup.id, returnPort: ret.id, sensibleW: dev.capacityBtuh * (dev.type === 'mini_split' ? 0.7 : dev.shr) * BTUH_TO_W, setpoint: dev.setpoint, enabled: dev.enabled });
         break;
       }
 
@@ -538,6 +549,11 @@ export function voxelize(scene: SceneV1): VoxelizeResult {
           periodSec: 0,
           enabled: dev.enabled,
         });
+        addFanHeat(dev.id, dev.type, dev.enabled, (p) => {
+          const d: Vec3 = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
+          const along = d[0] * nrm[0] + d[1] * nrm[1] + d[2] * nrm[2];
+          return Math.abs(along) <= 0.75 * h && Math.hypot(d[0] - along * nrm[0], d[1] - along * nrm[1], d[2] - along * nrm[2]) <= Math.max(r, h);
+        });
         break;
       }
 
@@ -560,14 +576,39 @@ export function voxelize(scene: SceneV1): VoxelizeResult {
           periodSec: dev.periodSec,
           enabled: dev.enabled,
         });
+        addFanHeat(dev.id, dev.type, dev.enabled, (p) => Math.hypot(p[0] - dev.pos[0], p[1] - dev.pos[1]) <= reach && p[2] >= z0 && p[2] <= z1);
         break;
       }
     }
   }
 
-  if (scene.walls.some((w) => w.exterior)) warnings.push('walls are adiabatic (no conduction to outdoors) until phase 3');
-  if (closedWindows) warnings.push(`${closedWindows} closed window(s) are solid wall; glazing heat gain arrives in phase 3`);
-  if (scene.devices.some((d) => 'setpoint' in d)) warnings.push('AC units run continuously; thermostat cycling arrives in phase 3');
+  // Envelope: conduction from each air cell through the wall or glass beside it to outdoors.
+  let wallUA: Float32Array | undefined;
+  let glassUA: Float32Array | undefined;
+  if (scene.envelope) {
+    wallUA = new Float32Array(n);
+    glassUA = new Float32Array(n);
+    const ext = scene.envelope.exteriorEdges;
+    const area = h * h;
+    const outsideAllRooms = (p: Vec3) => !scene.rooms.some((r) => pointInPolygon(p[0], p[1], r.outline));
+    for (let c = 0; c < n; c++) {
+      if (cellType[c] !== CellType.Fluid) continue;
+      for (const nb of [c - 1, c + 1, c - nx, c + nx]) {
+        // Only the building shell: solid cells outside every room (not furniture or device bodies).
+        if (cellType[nb] !== CellType.Solid) continue;
+        const p = g.center(nb);
+        if (!outsideAllRooms(p)) continue;
+        const room = scene.rooms.find((r) => pointInPolygon(...(g.center(c).slice(0, 2) as [number, number]), r.outline)) ?? scene.rooms[0];
+        const edge = nearestEdge(room, p[0], p[1]).edge;
+        if (ext && !ext.includes(edge)) continue; // interior wall: no loss
+        const gu = glassU.get(nb);
+        if (gu !== undefined) glassUA[c] += gu * area;
+        else wallUA[c] += scene.envelope.wallU * area;
+      }
+    }
+  } else if (scene.walls.some((w) => w.exterior) || closedWindows) {
+    warnings.push('no insulation settings in this file, so walls and windows are treated as perfect insulators');
+  }
   if (scene.doors?.length) warnings.push('doors ignored until phase 5');
 
   return {
@@ -586,6 +627,9 @@ export function voxelize(scene: SceneV1): VoxelizeResult {
       ports,
       fans,
       acUnits,
+      wallUA,
+      glassUA,
+      infiltrationAch: scene.envelope?.ach ?? 0,
     },
     warnings,
   };

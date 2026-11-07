@@ -72,8 +72,8 @@ describe('editing other objects', () => {
     expect(next).toMatchObject({ diameter: 1.4 });
   });
 
-  it('objects without a size have no handles', () => {
+  it('objects without a size only get their aim handle', () => {
     const { scene, id } = placed(room(), 'tower_fan', 1, 1);
-    expect(handlesFor(scene, id)).toEqual([]);
+    expect(handlesFor(scene, id).map((h) => h.id)).toEqual(['aim']);
   });
 });

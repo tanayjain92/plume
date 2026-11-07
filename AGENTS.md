@@ -10,8 +10,9 @@ Plume is a room airflow and heat simulator. **`SPEC.md` is the source of truth**
 |---|---|
 | 1. Solver core | Done. CPU solver, MIC(0)-PCG pressure projection, buoyancy, conservative temperature transport, plan and section slice views |
 | 2. Single room editor | Done. Open windows (wind + stack effect), vents, window/portable AC, mini split, box/ceiling/tower fans, room editor with drag and live edits |
-| 3. Thermal and controls | Next |
-| 4–6 | Not started |
+| 3. Thermal and controls | Done. Wall/glass conduction, infiltration, solar gain, fan motor heat, thermostat cycling, live energy balance, temperature chart, predicted settling temperature |
+| 4. Performance | Next |
+| 5–6 | Not started |
 
 ## How to work
 

@@ -18,6 +18,20 @@ export interface SceneV1 {
   openings: Opening[];
   devices: Device[];
   doors?: Door[];
+  /**
+   * How the room exchanges heat with outdoors. Missing = adiabatic (walls
+   * don't conduct, no air leaks), which is what older scene files get.
+   */
+  envelope?: Envelope;
+}
+
+export interface Envelope {
+  /** U-value of walls facing outdoors, W/m²·K (good ≈ 0.3, average ≈ 0.6, poor ≈ 1.5). */
+  wallU: number;
+  /** Outdoor air leaking in, air changes per hour (tight ≈ 0.2, average ≈ 0.5, leaky ≈ 1.0). */
+  ach: number;
+  /** Edges (walls) that face outdoors. Missing = all of them. Floor and ceiling are adiabatic. */
+  exteriorEdges?: number[];
 }
 
 export interface Room {
@@ -173,7 +187,14 @@ export interface SunDevice extends DeviceBase {
   wm2: number;
 }
 
+/** A thermometer: reads the simulated air at a point. No effect on the physics. */
+export interface SensorDevice extends DeviceBase {
+  type: 'sensor';
+  pos: Vec3;
+}
+
 export type Device =
+  | SensorDevice
   | HeatSourceDevice
   | SunDevice
   | SunPatchDevice

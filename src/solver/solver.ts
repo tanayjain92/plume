@@ -75,9 +75,38 @@ export interface SolverStats {
   openInflow: number;
 }
 
+/** Average heat flow into the room air per source since the last report, W (negative = out). */
+export interface EnergyReport {
+  seconds: number;
+  /** People, equipment and heaters. */
+  sources: number;
+  /** Sunlight absorbed in the room. */
+  sun: number;
+  /** Fan motor heat. */
+  fans: number;
+  walls: number;
+  glass: number;
+  infiltration: number;
+  ac: number;
+  vents: number;
+  leakage: number;
+  openWindows: number;
+  /** Sum of the above. */
+  net: number;
+  /** Rate of change of heat stored in the room air. Equals `net` when the bookkeeping closes. */
+  storage: number;
+}
+
+/** Thermostat deadband half-width on return air, °C (±1 °F). */
+export const THERMOSTAT_BAND = 0.55;
+
 export interface AcReport {
   id: string;
   enabled: boolean;
+  /** Compressor running (thermostat calling for cooling). */
+  compressorOn: boolean;
+  /** Fraction of time the compressor has run since the last state reset. */
+  duty: number;
   supplyT: number;
   returnT: number;
   /** Sensible heat removed from the room air, W. */
@@ -146,7 +175,15 @@ export class FluidSolver {
   private readonly fluidCount: number;
   /** Faces between a fluid and an open cell: face, axis, inward sign (+1 if fluid is on the +axis side). */
   private readonly openFaces: { face: number; axis: number; inward: number }[] = [];
-  private readonly acState = new Map<string, { returnT: number }>();
+  private readonly acState = new Map<string, { returnT: number; on: boolean; onTime: number; time: number }>();
+  /** Per fluid cell conductance to outdoors, W/K. */
+  private readonly wallUA: Float32Array;
+  private readonly glassUA: Float32Array;
+  private readonly envCells: Int32Array;
+  readonly infiltrationAch: number;
+  private readonly acPortIds: Set<string>;
+  private energy = { sources: 0, sun: 0, fans: 0, walls: 0, glass: 0, infiltration: 0, ac: 0, vents: 0, leakage: 0, openWindows: 0 };
+  private energyStart = { time: 0, stored: 0 };
   private readonly fanGain = new Map<string, number>();
   private readonly fanWarned = new Set<string>();
   private lastPressureDt = 0;
@@ -220,6 +257,79 @@ export class FluidSolver {
     for (const a of this.acUnits) {
       if (!this.port(a.supplyPort) || !this.port(a.returnPort)) throw new Error(`AC ${a.id} references a missing port`);
     }
+
+    this.acPortIds = new Set(this.acUnits.flatMap((a) => [a.supplyPort, a.returnPort]));
+    this.wallUA = scene.wallUA ? scene.wallUA.slice() : new Float32Array(this.n);
+    this.glassUA = scene.glassUA ? scene.glassUA.slice() : new Float32Array(this.n);
+    const env: number[] = [];
+    for (let c = 0; c < this.n; c++) {
+      if (this.wallUA[c] + this.glassUA[c] === 0) continue;
+      if (!this.fluid[c]) throw new Error(`envelope conductance on non-fluid cell ${c}`);
+      env.push(c);
+    }
+    this.envCells = Int32Array.from(env);
+    this.infiltrationAch = scene.infiltrationAch ?? 0;
+    this.energyStart = { time: 0, stored: this.storedHeat() };
+  }
+
+  /** Heat stored in the room air relative to 0 °C, J. */
+  private storedHeat(): number {
+    let s = 0;
+    for (let c = 0; c < this.n; c++) if (this.fluid[c]) s += this.T[c];
+    return s * RHO * CP * this.h ** 3;
+  }
+
+  /** Conduction through walls and closed glass, and infiltration of outdoor air. */
+  private applyEnvelope(dt: number): void {
+    const { T, envCells, wallUA, glassUA, outdoorTemp } = this;
+    const cellC = RHO * CP * this.h ** 3; // J/K per cell
+    for (let m = 0; m < envCells.length; m++) {
+      const c = envCells[m];
+      const dTo = outdoorTemp - T[c];
+      const qWall = wallUA[c] * dTo;
+      const qGlass = glassUA[c] * dTo;
+      T[c] += ((qWall + qGlass) * dt) / cellC;
+      this.energy.walls += qWall * dt;
+      this.energy.glass += qGlass * dt;
+    }
+    if (this.infiltrationAch > 0) {
+      const k = (this.infiltrationAch / 3600) * dt;
+      let sum = 0;
+      for (let c = 0; c < this.n; c++) {
+        if (!this.fluid[c]) continue;
+        const d = k * (outdoorTemp - T[c]);
+        T[c] += d;
+        sum += d;
+      }
+      this.energy.infiltration += sum * cellC;
+    }
+  }
+
+  /** Average heat flows since the last call, then start a new averaging window. */
+  energyReport(): EnergyReport {
+    const seconds = this.time - this.energyStart.time;
+    const stored = this.storedHeat();
+    const e = this.energy;
+    const w = (j: number) => (seconds > 0 ? j / seconds : 0);
+    const r = {
+      seconds,
+      sources: w(e.sources),
+      sun: w(e.sun),
+      fans: w(e.fans),
+      walls: w(e.walls),
+      glass: w(e.glass),
+      infiltration: w(e.infiltration),
+      ac: w(e.ac),
+      vents: w(e.vents),
+      leakage: w(e.leakage),
+      openWindows: w(e.openWindows),
+      net: 0,
+      storage: w(stored - this.energyStart.stored),
+    };
+    r.net = r.sources + r.sun + r.fans + r.walls + r.glass + r.infiltration + r.ac + r.vents + r.leakage + r.openWindows;
+    this.energy = { sources: 0, sun: 0, fans: 0, walls: 0, glass: 0, infiltration: 0, ac: 0, vents: 0, leakage: 0, openWindows: 0 };
+    this.energyStart = { time: this.time, stored };
+    return r;
   }
 
   private maskFor(axis: number): Uint8Array {
@@ -280,7 +390,8 @@ export class FluidSolver {
 
   private substep(dt: number): void {
     this.applyHeatSources(dt);
-    this.updateAcUnits();
+    this.applyEnvelope(dt);
+    this.updateAcUnits(dt);
     this.applyFans(dt);
     this.applyMomentumSources(dt);
     if (this.opts.buoyancy) this.applyBuoyancy(dt);
@@ -300,19 +411,35 @@ export class FluidSolver {
       if (!src.enabled || src.watts === 0 || src.cells.length === 0) continue;
       const dT = (src.watts * dt) / (RHO * CP * cellVolume * src.cells.length);
       for (let m = 0; m < src.cells.length; m++) this.T[src.cells[m]] += dT;
+      this.energy[src.kind === 'sun' ? 'sun' : src.kind === 'fan' ? 'fans' : 'sources'] += src.watts * dt;
     }
   }
 
-  /** Supply temperature = return temperature − sensible capacity / (ρ·cp·V̇). */
-  private updateAcUnits(): void {
+  /**
+   * Supply temperature = return temperature − sensible capacity / (ρ·cp·V̇)
+   * while the compressor runs. A thermostat on return air switches the
+   * compressor off below setpoint − band and back on above setpoint + band;
+   * the fan keeps moving air either way.
+   */
+  private updateAcUnits(dt: number): void {
     for (const ac of this.acUnits) {
       const sup = this.port(ac.supplyPort)!;
       const ret = this.port(ac.returnPort)!;
       sup.enabled = ac.enabled;
       ret.enabled = ac.enabled;
       const returnT = this.portAirTemp(ret);
-      this.acState.set(ac.id, { returnT });
-      if (sup.flow > 0) sup.temp = returnT - ac.sensibleW / (RHO * CP * sup.flow);
+      const st = this.acState.get(ac.id) ?? { returnT, on: true, onTime: 0, time: 0 };
+      if (ac.setpoint !== undefined) {
+        if (st.on && returnT < ac.setpoint - THERMOSTAT_BAND) st.on = false;
+        else if (!st.on && returnT > ac.setpoint + THERMOSTAT_BAND) st.on = true;
+      } else st.on = true;
+      st.returnT = returnT;
+      if (ac.enabled) {
+        st.time += dt;
+        if (st.on) st.onTime += dt;
+      }
+      this.acState.set(ac.id, st);
+      if (sup.flow > 0) sup.temp = st.on ? returnT - ac.sensibleW / (RHO * CP * sup.flow) : returnT;
     }
   }
 
@@ -669,21 +796,40 @@ export class FluidSolver {
         tAcc[R] += flux;
       }
 
+      // Internal face fluxes cancel and solid faces carry none, so what the air
+      // cells gained from face fluxes is exactly what crossed open windows.
+      const cellC = RHO * CP * h * h * h;
+      if (this.openFaces.length) {
+        let gained = 0;
+        for (let c = 0; c < this.n; c++) if (fluid[c]) gained += tAcc[c] - T[c];
+        this.energy.openWindows += gained * cellC;
+      }
+
       for (const p of this.ports) {
         if (!p.enabled || p.flow === 0 || p.area === 0) continue;
         const vin = p.flow / p.area; // inward speed, m/s
+        let sum = 0;
         for (let m = 0; m < p.cells.length; m++) {
           const c = p.cells[m];
-          tAcc[c] += ka * vin * (vin > 0 ? p.temp : T[c]);
+          const d = ka * vin * (vin > 0 ? p.temp : T[c]);
+          tAcc[c] += d;
+          sum += d;
         }
+        if (this.acPortIds.has(p.id)) this.energy.ac += sum * cellC;
+        else this.energy.vents += sum * cellC;
       }
 
       if (hasLeak) {
+        let sum = 0;
         for (let c = 0; c < this.n; c++) {
           if (!fluid[c]) continue;
           const q = this.regionLeak[comp[c]];
-          if (q !== 0) tAcc[c] += q * tdt * (q > 0 ? tOut : T[c]);
+          if (q === 0) continue;
+          const d = q * tdt * (q > 0 ? tOut : T[c]);
+          tAcc[c] += d;
+          sum += d;
         }
+        this.energy.leakage += sum * cellC;
       }
 
       for (let c = 0; c < this.n; c++) T[c] = this.open[c] ? tOut : tAcc[c];
@@ -858,11 +1004,14 @@ export class FluidSolver {
     return {
       acUnits: this.acUnits.map((ac) => {
         const sup = this.port(ac.supplyPort)!;
-        const returnT = this.acState.get(ac.id)?.returnT ?? this.portAirTemp(this.port(ac.returnPort)!);
+        const st = this.acState.get(ac.id);
+        const returnT = st?.returnT ?? this.portAirTemp(this.port(ac.returnPort)!);
         const supplyT = ac.enabled ? sup.temp : returnT;
         return {
           id: ac.id,
           enabled: ac.enabled,
+          compressorOn: ac.enabled && (st?.on ?? true),
+          duty: st && st.time > 0 ? st.onTime / st.time : ac.enabled ? 1 : 0,
           supplyT,
           returnT,
           coolingW: ac.enabled ? RHO * CP * sup.flow * (returnT - supplyT) : 0,
@@ -908,6 +1057,8 @@ export class FluidSolver {
     this.time = old.time;
     this.steps = old.steps;
     for (const [id, g] of old.fanGain) if (this.fans.some((f) => f.id === id)) this.fanGain.set(id, g);
+    for (const [id, st] of old.acState) if (this.acUnits.some((a) => a.id === id)) this.acState.set(id, { ...st });
+    this.energyStart = { time: this.time, stored: this.storedHeat() };
   }
 
   setHeatSource(id: string, patch: { watts?: number; enabled?: boolean }): void {

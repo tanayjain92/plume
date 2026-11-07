@@ -1,5 +1,8 @@
 import type { Device, Opening, Room, SceneV1, Vec2, Vec3 } from './types';
 
+/** Motor heat from fans, W (typical: box ~60, tower ~45, ceiling ~35). It ends up in the room air. */
+export const FAN_MOTOR_W = { box_fan: 60, tower_fan: 45, ceiling_fan: 35 } as const;
+
 /** Unit conversions applied once, when a scene is voxelized. */
 export const CFM_TO_M3S = 0.000471947;
 export const BTUH_TO_W = 0.29307107;
@@ -209,6 +212,11 @@ export function sceneShapes(scene: SceneV1): DeviceShape[] {
           enabled: d.enabled,
         });
         break;
+      case 'sensor': {
+        const r = 0.12;
+        shapes.push({ id: d.id, kind: d.type, lo: [d.pos[0] - r, d.pos[1] - r, d.pos[2] - r], hi: [d.pos[0] + r, d.pos[1] + r, d.pos[2] + r], enabled: d.enabled });
+        break;
+      }
       case 'sun': {
         const r = 0.25;
         shapes.push({

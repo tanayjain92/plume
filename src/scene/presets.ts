@@ -10,6 +10,7 @@ function bedroom(name: string, openings: Opening[], devices: Device[], opts: { i
     walls: [],
     openings,
     devices,
+    envelope: { wallU: 0.6, ach: 0.5 },
   };
 }
 

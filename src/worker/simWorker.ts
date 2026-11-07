@@ -64,6 +64,7 @@ function postFrame(stepsPerSec: number, realtimeFactor: number): void {
       type: 'frame',
       stats: { ...solver.stats(), stepsPerSec, realtimeFactor },
       devices: solver.deviceReport(),
+      energy: solver.energyReport(),
       T,
       ux,
       uy,

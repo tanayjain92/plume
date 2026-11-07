@@ -49,8 +49,24 @@ export function newSpace(opts: { name: string; outline: Vec2[]; height: number; 
     walls: [],
     openings: [],
     devices: [],
+    envelope: { ...DEFAULT_ENVELOPE },
   };
 }
+
+/** Average insulation and air tightness for a new space. */
+export const DEFAULT_ENVELOPE = { wallU: 0.6, ach: 0.5 };
+
+export const INSULATION_LEVELS = [
+  { label: 'Poor', wallU: 1.5 },
+  { label: 'Average', wallU: 0.6 },
+  { label: 'Good', wallU: 0.3 },
+];
+
+export const LEAK_LEVELS = [
+  { label: 'Tight', ach: 0.2 },
+  { label: 'Average', ach: 0.5 },
+  { label: 'Leaky', ach: 1.0 },
+];
 
 const round = (v: number, step = 0.01) => Math.round(v / step) * step;
 
@@ -69,12 +85,13 @@ export type ToolKind =
   | 'sun'
   | 'person'
   | 'heater'
-  | 'computer';
+  | 'computer'
+  | 'sensor';
 
 export interface Tool {
   kind: ToolKind;
   label: string;
-  group: 'Cooling' | 'Fans' | 'Openings' | 'Heat';
+  group: 'Cooling' | 'Fans' | 'Openings' | 'Heat' | 'Measure';
   icon: string;
   /** Snaps to the nearest wall when placed. */
   wall?: boolean;
@@ -95,6 +112,7 @@ export const TOOLS: Tool[] = [
   { kind: 'person', label: 'Person', group: 'Heat', icon: '☺', hint: 'Click where someone is.' },
   { kind: 'heater', label: 'Space heater', group: 'Heat', icon: '♨', hint: 'Click the floor.' },
   { kind: 'computer', label: 'Computer', group: 'Heat', icon: '⌨', hint: 'Click where the PC is.' },
+  { kind: 'sensor', label: 'Temp sensor', group: 'Measure', icon: '🌡', hint: 'Click where you want a temperature reading. It reads at seated head height; change the height after placing it.' },
 ];
 
 function uniqueId(scene: SceneV1, base: string): string {
@@ -204,6 +222,9 @@ export function placeTool(scene: SceneV1, kind: ToolKind, x: number, y: number):
     case 'heater':
       dev = { id: uniqueId(scene, 'Space heater'), type: 'heat_source', pos: pos(0), size: [0.3, 0.2, 0.6], watts: 1500, enabled: true };
       break;
+    case 'sensor':
+      dev = { id: uniqueId(scene, 'Sensor'), type: 'sensor', pos: pos(Math.min(1.1, room.height - 0.15)), enabled: true };
+      break;
     case 'computer':
       dev = { id: uniqueId(scene, 'Computer'), type: 'heat_source', pos: pos(0), size: [0.2, 0.45, 0.45], watts: 200, enabled: true };
       break;
@@ -260,6 +281,8 @@ const flowStrength = <T extends { airflowCfm: number }>(label: string, low: numb
 /** The one "how strong" control for each kind of device. Null for windows (they use open/closed). */
 export function strengthFor(d: Device): Strength<Device> | null {
   switch (d.type) {
+    case 'sensor':
+      return null;
     case 'window_ac':
       return acStrength<typeof d>(27.5, [5000, 8000, 12000]) as Strength<Device>;
     case 'portable_ac':

@@ -26,6 +26,8 @@ export interface HeatSource {
   cells: Int32Array;
   watts: number;
   enabled: boolean;
+  /** What the heat is, for the energy balance. Missing = people and equipment. */
+  kind?: "sun" | "fan";
 }
 
 /**
@@ -96,6 +98,8 @@ export interface AcUnit {
   returnPort: string;
   /** Sensible cooling capacity, W. */
   sensibleW: number;
+  /** Thermostat setpoint on return air, °C. Undefined = compressor always on. */
+  setpoint?: number;
   enabled: boolean;
 }
 
@@ -119,6 +123,11 @@ export interface VoxelScene {
   ports: FlowPort[];
   fans: FanForce[];
   acUnits: AcUnit[];
+  /** Per fluid cell: conductance to outdoors through walls / closed glass, W/K. Missing = adiabatic. */
+  wallUA?: Float32Array;
+  glassUA?: Float32Array;
+  /** Outdoor air infiltration, air changes per hour, mixed uniformly into the room. */
+  infiltrationAch?: number;
 }
 
 export function cellIndex(nx: number, ny: number, i: number, j: number, k: number): number {

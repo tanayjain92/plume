@@ -22,16 +22,18 @@ describe('voxelizer', () => {
     for (const c of src.cells) expect(Math.floor(c / (nx * ny))).toBe(1); // first fluid layer
   });
 
-  it('builds every device in the SPEC sample bedroom and reports only phase 3 gaps', () => {
+  it('builds every device in the SPEC sample bedroom, including its insulation', () => {
     const { voxels, warnings } = voxelize(PRESETS.find((p) => p.id === 'spec-bedroom')!.scene);
-    expect(voxels.heatSources.map((s) => s.id)).toEqual(['person', 'desktop']);
+    expect(voxels.heatSources.map((s) => s.id)).toEqual(['fan1 motor', 'person', 'desktop']); // fan motors heat the room too
     expect(voxels.acUnits.map((a) => a.id)).toEqual(['ac1']);
     expect(voxels.ports.map((p) => p.id)).toEqual(['ac1:supply', 'ac1:return']);
     // 0.6 m wide x 0.4 m tall unit: 6 x 2 supply faces above 6 x 2 return faces
     expect(voxels.ports.map((p) => p.faces.length)).toEqual([12, 12]);
     expect(voxels.fans.map((f) => f.id)).toEqual(['fan1']);
     expect(warnings.some((w) => w.includes('ignored'))).toBe(false);
-    expect(warnings.some((w) => w.includes('phase 3'))).toBe(true);
+    expect(voxels.wallUA!.some((v) => v > 0)).toBe(true);
+    expect(voxels.glassUA!.some((v) => v > 0)).toBe(true);
+    expect(voxels.infiltrationAch).toBe(0.5);
   });
 
   it('turns an open window into open cells carrying wind pressure', () => {

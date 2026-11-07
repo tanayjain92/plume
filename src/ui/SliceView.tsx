@@ -41,6 +41,8 @@ export interface Glyph {
   /** Draw an arrow from the center to this point instead of the dir arrow (the sun). */
   arrowTo?: [number, number];
   round?: boolean;
+  /** Always-visible value tag next to the glyph (sensor readings). */
+  badge?: string;
 }
 
 interface Props {
@@ -113,8 +115,8 @@ export function SliceView(props: Props) {
     // Fit both the width of the panel and the height left in the window (room for the legend below).
     const fit = () => {
       const top = el.getBoundingClientRect().top + window.scrollY;
-      const availH = Math.max(240, window.innerHeight - top - 90);
-      setCellPx(Math.max(4, Math.min(28, Math.floor(el.clientWidth / (geom.W + 2 * pad)), Math.floor(availH / (geom.H + 2 * pad)))));
+      const availH = Math.max(420, window.innerHeight - top - 80);
+      setCellPx(Math.max(4, Math.min(40,Math.floor(el.clientWidth / (geom.W + 2 * pad)), Math.floor(availH / (geom.H + 2 * pad)))));
     };
     const ro = new ResizeObserver(fit);
     ro.observe(el);
@@ -415,6 +417,13 @@ export function SliceView(props: Props) {
           ctx.closePath();
           ctx.fill();
           ctx.globalAlpha = 1;
+          if (gl.selected) {
+            ctx.strokeStyle = '#ffd250';
+            ctx.lineWidth = 2.5;
+            ctx.setLineDash([6, 4]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
           ctx.restore();
           continue;
         }
@@ -435,9 +444,9 @@ export function SliceView(props: Props) {
           ctx.arc(x0 + w / 2, y0 + hgt / 2, r, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
-          // rays
+          // rays (the sun only; sensors are plain dots)
           ctx.beginPath();
-          for (let k = 0; k < 8; k++) {
+          for (let k = 0; k < (gl.badge ? 0 : 8); k++) {
             const ang = (k * Math.PI) / 4;
             ctx.moveTo(x0 + w / 2 + Math.cos(ang) * r * 1.3, y0 + hgt / 2 + Math.sin(ang) * r * 1.3);
             ctx.lineTo(x0 + w / 2 + Math.cos(ang) * r * 1.7, y0 + hgt / 2 + Math.sin(ang) * r * 1.7);
@@ -466,7 +475,23 @@ export function SliceView(props: Props) {
           if (gl.intake) drawArrow(ctx, cx - ux * len, cy - uy * len, ux, uy, len, gl.color, 2.2);
           else drawArrow(ctx, cx + (ux * len) / 2, cy + (uy * len) / 2, ux, uy, len, gl.color, 2.2);
         }
-        if (gl.selected || cp >= 10) {
+        if (gl.badge) {
+          ctx.font = 'bold 12px Inter, Segoe UI, system-ui, sans-serif';
+          const tw = ctx.measureText(gl.badge).width;
+          const bx = x0 + w + 4;
+          const by = y0 + hgt / 2 - 9;
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = 'rgba(18, 20, 26, 0.88)';
+          ctx.strokeStyle = gl.selected ? '#ffd250' : gl.color;
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.roundRect(bx, by, tw + 10, 18, 9);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText(gl.badge, bx + 5, by + 13);
+          ctx.font = '11px Inter, Segoe UI, system-ui, sans-serif';
+        } else if (gl.selected || cp >= 10) {
           ctx.fillStyle = gl.selected ? '#ffd250' : '#e7e9ee';
           ctx.fillText(gl.label, x0, y0 - 3);
         }

@@ -1,4 +1,4 @@
-import type { DeviceReport, SolverStats } from '../solver/solver';
+import type { DeviceReport, EnergyReport, SolverStats } from '../solver/solver';
 import type { SceneV1 } from '../scene/types';
 
 export type ToWorker =
@@ -33,6 +33,8 @@ export interface FrameStats extends SolverStats {
 export interface Frame {
   stats: FrameStats;
   devices: DeviceReport;
+  /** Heat flows into the room air averaged since the previous frame, W. */
+  energy: EnergyReport;
   /** Cell-centered fields, flat index i + nx*(j + ny*k). */
   T: Float32Array;
   ux: Float32Array;

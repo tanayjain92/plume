@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { hasHeading, placeTool, TOOLS, type ToolKind } from '../scene/defaults';
-import { dragHandle, handlesFor, removeItem, resizeWindow, SUN_ARROW, toggleWindow } from '../scene/editing';
+import { aimArrow, dragHandle, handlesFor, removeItem, resizeWindow, SUN_ARROW, sunlightId, toggleWindow } from '../scene/editing';
 import { sunPatches } from '../scene/solar';
-import { edgeFrame, pointInPolygon, sceneShapes, type DeviceShape } from '../scene/geometry';
+import { EnergyPanel } from './EnergyPanel';
+import { EnergyWindow, TempHistory } from './history';
+import { TempChart } from './TempChart';
+import { edgeFrame, pointInPolygon, polygonArea, sceneShapes, type DeviceShape } from '../scene/geometry';
 import type { Device, SceneV1 } from '../scene/types';
 import type { Frame, FromWorker, GridInfo, ToWorker } from '../worker/protocol';
-import { ControlsPanel } from './Controls';
+import { ControlsPanel, type SensorReading } from './Controls';
+import { PredictionCard } from './PredictionCard';
+import { predictRoom } from '../scene/predict';
+import { DEFAULT_ENVELOPE } from '../scene/defaults';
 import { SetupScreen } from './SetupScreen';
 import { SliceView, type FieldKind, type Glyph, type Overlays } from './SliceView';
 import { cellAt, cellCenter, type SliceAxis } from './slice';
@@ -31,6 +37,7 @@ const GLYPH_COLORS: Record<DeviceShape['kind'], string> = {
   window: '#6ec6ff',
   heat_source: '#ff9f43',
   sun: '#ffca28',
+  sensor: '#f48fb1',
   sunlight: '#ffe082',
   sun_patch: '#ffd54f',
   window_ac: '#4dd0e1',
@@ -49,7 +56,10 @@ type Drag =
   | { kind: 'handle'; id: string; handle: string; scene0: SceneV1 };
 
 /** Margin around the room in the top view, m: room for the sun outside. */
-const OUTSIDE_MARGIN = 1.2;
+const OUTSIDE_MARGIN = 0.7;
+/** Edits closer together than this (a drag, a slider) undo as one step. */
+const UNDO_MERGE_MS = 400;
+const UNDO_LIMIT = 100;
 
 export function App() {
   const workerRef = useRef<Worker | null>(null);
@@ -78,6 +88,9 @@ export function App() {
   const [tempHalfRange, setTempHalfRange] = useState(4);
   const [draftThreshold, setDraftThreshold] = useState(0.25);
   const dragRef = useRef<Drag | null>(null);
+  const sensorHistory = useRef(new Map<string, { t: number; T: number }[]>());
+  const tempHistory = useRef(new TempHistory());
+  const energyWindow = useRef(new EnergyWindow(60));
   const fileRef = useRef<HTMLInputElement>(null);
 
   const send = useCallback((msg: ToWorker) => workerRef.current?.postMessage(msg), []);
@@ -117,6 +130,16 @@ export function App() {
     keepStateRef.current = true;
   }, [scene, send]);
 
+  // Chart history and the energy balance window, fed by each frame.
+  useEffect(() => {
+    if (!frame || !scene) return;
+    const st = frame.stats;
+    const ac = scene.devices.find((d) => (d.type === 'window_ac' || d.type === 'portable_ac' || d.type === 'mini_split') && d.enabled) as { setpoint?: number } | undefined;
+    tempHistory.current.push({ t: st.time, mean: st.meanT, floor: st.floorT, ceiling: st.ceilingT, outdoor: scene.outdoor.temp, setpoint: ac?.setpoint });
+    energyWindow.current.push(st.time, frame.energy);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [frame]);
+
   const room = scene?.rooms[0];
   const bounds = useMemo(() => {
     if (!room) return { x0: 0, x1: 1, y0: 0, y1: 1, height: 1 };
@@ -127,6 +150,10 @@ export function App() {
 
   const loadScene = (next: SceneV1) => {
     keepStateRef.current = false;
+    tempHistory.current.clear();
+    energyWindow.current.clear();
+    undoStack.current = [];
+    setCanUndo(false);
     setScene(next);
     setShowSetup(false);
     setSelected(null);
@@ -150,7 +177,28 @@ export function App() {
     }
   };
 
-  const editScene = (next: SceneV1) => setScene(next);
+  // Undo: each edit saves the scene it replaced. Rapid edits (dragging, sliders) merge into one step.
+  const undoStack = useRef<SceneV1[]>([]);
+  const lastEditAt = useRef(0);
+  const [canUndo, setCanUndo] = useState(false);
+  const editScene = (next: SceneV1) => {
+    const now = performance.now();
+    if (scene && now - lastEditAt.current > UNDO_MERGE_MS) {
+      undoStack.current.push(scene);
+      if (undoStack.current.length > UNDO_LIMIT) undoStack.current.shift();
+      setCanUndo(true);
+    }
+    lastEditAt.current = now;
+    setScene(next);
+  };
+  const undo = () => {
+    const prev = undoStack.current.pop();
+    if (!prev) return;
+    lastEditAt.current = 0;
+    setCanUndo(undoStack.current.length > 0);
+    setScene(prev);
+    setSelected((id) => (id && !id.startsWith("sunlight:") && !prev.devices.some((d) => d.id === id) && !prev.openings.some((o) => o.id === id) ? null : id));
+  };
 
   const toggleRun = () => {
     const next = !running;
@@ -196,18 +244,23 @@ export function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z" && !showSetup) {
+        e.preventDefault();
+        undo();
+        return;
+      }
       if (e.key === 'Escape') {
         if (tool) setTool(null);
         else setSelected(null);
       }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selected && scene && !showSetup) {
-        setScene(removeItem(scene, selected));
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selected && !selected.startsWith('sunlight:') && scene && !showSetup) {
+        editScene(removeItem(scene, selected));
         setSelected(null);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [tool, selected, scene, showSetup]);
+  }, [tool, selected, scene, showSetup, undo]);
 
   useEffect(() => {
     if (!notice) return;
@@ -244,6 +297,24 @@ export function App() {
   const sliceAxis: SliceAxis = view === 'top' ? 'z' : sectionAxis;
   const sliceIndex = grid ? (view === 'top' ? cellAt(grid, 'z', planZ) : cellAt(grid, sectionAxis, sectionPos)) : 1;
   const padCells = grid && view === 'top' ? Math.round(OUTSIDE_MARGIN / grid.h) : 0;
+
+  // Sensor readings from the latest frame (trilinear in the cell-centered fields).
+  const readings: Record<string, SensorReading> = {};
+  if (frame && grid && frame.T.length === grid.nx * grid.ny * grid.nz) {
+    for (const d of scene.devices) {
+      if (d.type !== 'sensor') continue;
+      const T = sampleAt(frame.T, grid, d.pos);
+      const speed = Math.hypot(sampleAt(frame.ux, grid, d.pos), sampleAt(frame.uy, grid, d.pos), sampleAt(frame.uz, grid, d.pos));
+      const hist = sensorHistory.current.get(d.id) ?? [];
+      const t = frame.stats.time;
+      if (!hist.length || t > hist[hist.length - 1].t + 0.5) hist.push({ t, T });
+      if (hist.length && t < hist[hist.length - 1].t) hist.length = 0; // reset
+      while (hist.length > 2 && t - hist[0].t > 60) hist.shift();
+      sensorHistory.current.set(d.id, hist);
+      const span = hist.length > 1 ? t - hist[0].t : 0;
+      readings[d.id] = { T, speed, trend: span > 10 ? ((T - hist[0].T) / span) * 60 : undefined };
+    }
+  }
 
   /** World plan point -> slice cell coords (top view). */
   const toCell = (x: number, y: number): [number, number] => {
@@ -282,6 +353,11 @@ export function App() {
         ghost: s.id === ghostId,
       };
       if (s.poly) g.poly = s.poly.map(([x, y]) => toCell(x, y));
+      if (s.kind === 'sensor') {
+        g.round = true;
+        const r = readings[s.id];
+        g.badge = r ? fmtTemp(r.T, units, 1) : '–';
+      }
       if (s.kind === 'sun' && s.dir) {
         g.round = true;
         const cx = (s.lo[0] + s.hi[0]) / 2;
@@ -289,13 +365,22 @@ export function App() {
         g.arrowTo = toCell(cx + s.dir[0] * SUN_ARROW, cy + s.dir[1] * SUN_ARROW);
         g.dir = undefined;
       }
+      // Fans and ACs: arrow length shows strength; its tip is the aim handle.
+      if (sliceAxis === 'z') {
+        const dev = scene.devices.find((d) => d.id === s.id);
+        const arrow = dev && aimArrow(scene, dev);
+        if (arrow) {
+          g.arrowTo = toCell(arrow.to[0], arrow.to[1]);
+          g.dir = undefined;
+        }
+      }
       out.push(g);
     }
     return out;
   };
 
   const sunlight = (s: SceneV1): DeviceShape[] =>
-    sunPatches(s).map((p) => ({ id: `sunlight:${p.sunId}:${p.windowId}`, kind: 'sunlight', poly: p.quad, lo: [0, 0, 0], hi: [0, 0, 0], enabled: true }));
+    sunPatches(s).map((p) => ({ id: sunlightId(p.sunId, p.windowId), kind: 'sunlight', poly: p.quad, lo: [0, 0, 0], hi: [0, 0, 0], enabled: true }));
 
   const shapes = [...sunlight(scene), ...sceneShapes(scene)];
   let glyphs = toGlyphs(shapes);
@@ -323,7 +408,17 @@ export function App() {
     let best: Glyph | null = null;
     let bestArea = Infinity;
     for (const g of glyphs) {
-      if (g.ghost || g.poly || (view === 'side' && g.faded && !g.selected)) continue;
+      if (g.ghost || (view === 'side' && g.faded && !g.selected)) continue;
+      if (g.poly) {
+        if (pointInPolygon(a, b, g.poly)) {
+          const area = polygonArea(g.poly) + 1e6; // anything placed on top of the patch wins
+          if (area < bestArea) {
+            bestArea = area;
+            best = g;
+          }
+        }
+        continue;
+      }
       const [a0, a1] = [Math.min(g.a0, g.a1) - pad, Math.max(g.a0, g.a1) + pad];
       const [b0, b1] = [Math.min(g.b0, g.b1) - pad, Math.max(g.b0, g.b1) + pad];
       if (a < a0 || a > a1 || b < b0 || b > b1) continue;
@@ -410,12 +505,38 @@ export function App() {
   const selWindow = scene.openings.find((o) => o.id === selected);
   const selDevice = scene.devices.find((d) => d.id === selected);
   const setDev = (next: Device) => editScene({ ...scene, devices: scene.devices.map((d) => (d.id === next.id ? next : d)) });
+  const selSunlight = selected?.startsWith('sunlight:') ? selected.split(':') : null;
+  const anchor = selGlyph?.poly
+    ? { a: Math.min(...selGlyph.poly.map((q) => q[0])), b: Math.max(...selGlyph.poly.map((q) => q[1])) }
+    : selGlyph
+      ? { a: Math.min(selGlyph.a0, selGlyph.a1), b: Math.max(selGlyph.b0, selGlyph.b1) }
+      : null;
+  const sunDev = selSunlight ? scene.devices.find((d) => d.id === selSunlight[1]) : undefined;
   const actionBar =
-    selGlyph && !tool && view === 'top'
+    selGlyph && anchor && !tool && view === 'top'
       ? {
-          a: Math.min(selGlyph.a0, selGlyph.a1),
-          b: Math.max(selGlyph.b0, selGlyph.b1),
-          node: (
+          ...anchor,
+          node: selSunlight ? (
+            <>
+              <span className="ab-value">☀ sunlight</span>
+              <button title="Narrower window" onClick={() => editScene(resizeWindow(scene, selSunlight[2], -0.15))}>
+                −
+              </button>
+              <button title="Wider window" onClick={() => editScene(resizeWindow(scene, selSunlight[2], 0.15))}>
+                +
+              </button>
+              {sunDev?.type === 'sun' && (
+                <>
+                  <button title="Sun lower: patch reaches further" onClick={() => setDev({ ...sunDev, elevationDeg: Math.max(5, sunDev.elevationDeg - 5) })}>
+                    Longer
+                  </button>
+                  <button title="Sun higher: patch stays near the window" onClick={() => setDev({ ...sunDev, elevationDeg: Math.min(85, sunDev.elevationDeg + 5) })}>
+                    Shorter
+                  </button>
+                </>
+              )}
+            </>
+          ) : (
             <>
               {selWindow && (
                 <>
@@ -499,6 +620,9 @@ export function App() {
           <button onClick={() => send({ type: 'reset' })} disabled={!grid}>
             Reset
           </button>
+          <button onClick={undo} disabled={!canUndo} title="Undo the last change (Ctrl+Z)">
+            Undo
+          </button>
           <div className="seg" role="group" aria-label="Simulation speed">
             {SPEEDS.map((s) => (
               <button key={s.label} className={speed === s.value ? 'on' : ''} onClick={() => changeSpeed(s.value)}>
@@ -522,28 +646,6 @@ export function App() {
       </header>
 
       <main className="main">
-        <div className="stats">
-          <Stat label="Room time" value={stats ? fmtDuration(stats.time) : '–'} sub={stats ? `${stats.realtimeFactor.toFixed(1)}× realtime` : ''} />
-          <Stat label="Average" value={stats ? fmtTemp(stats.meanT, units, 1) : '–'} sub={stats ? `${fmtTemp(stats.minT, units)} – ${fmtTemp(stats.maxT, units)}` : ''} />
-          <Stat
-            label="Floor → ceiling"
-            value={stats ? fmtTempDelta(stats.ceilingT - stats.floorT, units, 1) : '–'}
-            sub={stats ? `${fmtTemp(stats.floorT, units)} → ${fmtTemp(stats.ceilingT, units)}` : ''}
-          />
-          <Stat label="Max air speed" value={stats ? fmtSpeed(stats.maxSpeed, units) : '–'} sub={stats ? `${stats.stepsPerSec.toFixed(0)} steps/s` : ''} />
-          <Stat
-            label="Outdoor air in"
-            value={stats ? fmtFlow(stats.openInflow + Math.max(0, stats.leakFlow), units) : '–'}
-            sub={stats ? (stats.leakFlow < -1e-4 ? `${fmtFlow(-stats.leakFlow, units)} leaking out` : stats.leakFlow > 1e-4 ? 'via leakage' : 'via open windows') : ''}
-          />
-          <Stat
-            label="Solver health"
-            value={stats ? (stats.maxDiv < DIV_TOL && stats.pressureConverged ? 'Good' : 'Check') : '–'}
-            sub={stats ? `divergence ${stats.maxDiv.toExponential(1)} /s` : ''}
-            tone={stats ? (stats.maxDiv < DIV_TOL && stats.pressureConverged ? 'ok' : 'bad') : undefined}
-          />
-        </div>
-
         <section className="panel viewbar">
           <div className="seg" role="group" aria-label="View">
             <button className={view === 'top' ? 'on' : ''} onClick={() => setView('top')}>
@@ -654,6 +756,44 @@ export function App() {
           <div className="loading">Building the grid…</div>
         )}
 
+        <div className="stats">
+          <Stat label="Room time" value={stats ? fmtDuration(stats.time) : '–'} sub={stats ? `${stats.realtimeFactor.toFixed(1)}× realtime` : ''} />
+          <Stat label="Average" value={stats ? fmtTemp(stats.meanT, units, 1) : '–'} sub={stats ? `${fmtTemp(stats.minT, units)} – ${fmtTemp(stats.maxT, units)}` : ''} />
+          <Stat
+            label="Floor → ceiling"
+            value={stats ? fmtTempDelta(stats.ceilingT - stats.floorT, units, 1) : '–'}
+            sub={stats ? `${fmtTemp(stats.floorT, units)} → ${fmtTemp(stats.ceilingT, units)}` : ''}
+          />
+          <Stat label="Max air speed" value={stats ? fmtSpeed(stats.maxSpeed, units) : '–'} sub={stats ? `${stats.stepsPerSec.toFixed(0)} steps/s` : ''} />
+          <Stat
+            label="Outdoor air in"
+            value={stats ? fmtFlow(stats.openInflow + Math.max(0, stats.leakFlow), units) : '–'}
+            sub={stats ? (stats.leakFlow < -1e-4 ? `${fmtFlow(-stats.leakFlow, units)} leaking out` : stats.leakFlow > 1e-4 ? 'via leakage' : 'via open windows') : ''}
+          />
+          <Stat
+            label="Solver health"
+            value={stats ? (stats.maxDiv < DIV_TOL && stats.pressureConverged ? 'Good' : 'Check') : '–'}
+            sub={stats ? `divergence ${stats.maxDiv.toExponential(1)} /s` : ''}
+            tone={stats ? (stats.maxDiv < DIV_TOL && stats.pressureConverged ? 'ok' : 'bad') : undefined}
+          />
+        </div>
+
+        <div className="history-row">
+          <section className="panel chart-panel">
+            <h3>Temperature over time</h3>
+            <TempChart samples={tempHistory.current.samples} version={stats?.time ?? 0} units={units} />
+          </section>
+          <EnergyPanel energy={frame ? energyWindow.current.average() : null} airVolume={stats && grid ? stats.fluidCells * grid.h ** 3 : 0} units={units} />
+        </div>
+
+        <PredictionCard
+          prediction={predictRoom(scene, { currentT: stats?.meanT, openInflow: stats && running ? stats.openInflow : undefined })}
+          currentT={stats?.meanT}
+          units={units}
+          hasEnvelope={Boolean(scene.envelope)}
+          onAddInsulation={() => editScene({ ...scene, envelope: { ...DEFAULT_ENVELOPE } })}
+        />
+
         {devices && (devices.acUnits.length > 0 || devices.fans.length > 0 || devices.ports.some((p) => !p.id.includes(':'))) && (
           <section className="panel readouts">
             <h3>Devices live</h3>
@@ -662,6 +802,11 @@ export function App() {
                 <div key={ac.id} className={`readout-card ${ac.enabled ? '' : 'off'}`}>
                   <b>{ac.id}</b>
                   <span>{ac.enabled ? `blowing ${fmtTemp(ac.supplyT, units)} · room air in at ${fmtTemp(ac.returnT, units)}` : 'off'}</span>
+                  {ac.enabled && (
+                    <span className={ac.compressorOn ? '' : 'muted'}>
+                      compressor {ac.compressorOn ? 'on' : 'off (setpoint reached, fan only)'} · ran {Math.round(ac.duty * 100)}% of the time
+                    </span>
+                  )}
                   {ac.enabled && (
                     <span className="muted small">
                       removing {fmtPower(ac.coolingW, units)} · {fmtFlow(ac.flow, units)}
@@ -704,7 +849,7 @@ export function App() {
         )}
       </main>
 
-      <ControlsPanel scene={scene} units={units} tool={tool} onTool={pickTool} selected={selected} onSelect={setSelected} onChange={editScene} onRedefine={() => setShowSetup(true)} />
+      <ControlsPanel scene={scene} units={units} tool={tool} onTool={pickTool} selected={selected} onSelect={setSelected} onChange={editScene} onRedefine={() => setShowSetup(true)} readings={readings} />
       {notice && <div className="toast">{notice}</div>}
     </div>
   );
@@ -718,4 +863,33 @@ function Stat(props: { label: string; value: string; sub?: string; tone?: 'ok' |
       <div className="stat-sub">{props.sub || ' '}</div>
     </div>
   );
+}
+
+/** Trilinear sample of a cell-centered field at a world point (m). */
+function sampleAt(a: Float32Array, grid: GridInfo, pos: [number, number, number]): number {
+  const { nx, ny, nz, h, origin } = grid;
+  const gx = Math.max(0, Math.min(nx - 1.0001, (pos[0] - origin[0]) / h - 0.5));
+  const gy = Math.max(0, Math.min(ny - 1.0001, (pos[1] - origin[1]) / h - 0.5));
+  const gz = Math.max(0, Math.min(nz - 1.0001, (pos[2] - origin[2]) / h - 0.5));
+  const i = Math.floor(gx);
+  const j = Math.floor(gy);
+  const k = Math.floor(gz);
+  const fx = gx - i;
+  const fy = gy - j;
+  const fz = gz - k;
+  const nxy = nx * ny;
+  const b = i + nx * (j + ny * k);
+  // Only average over air cells, so a sensor next to a wall doesn't read the wall.
+  let s = 0;
+  let w = 0;
+  for (let dz = 0; dz < 2; dz++)
+    for (let dy = 0; dy < 2; dy++)
+      for (let dx = 0; dx < 2; dx++) {
+        const c = b + dx + nx * dy + nxy * dz;
+        if (grid.cellType[c] !== 0) continue;
+        const wt = (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy) * (dz ? fz : 1 - fz);
+        s += a[c] * wt;
+        w += wt;
+      }
+  return w > 0 ? s / w : NaN;
 }

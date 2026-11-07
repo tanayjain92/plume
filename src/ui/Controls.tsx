@@ -1,12 +1,22 @@
-import { hasHeading, strengthFor, TOOLS, type ToolKind } from '../scene/defaults';
+import { DEFAULT_ENVELOPE, hasHeading, INSULATION_LEVELS, LEAK_LEVELS, strengthFor, TOOLS, type ToolKind } from '../scene/defaults';
+import { resizeWindow } from '../scene/editing';
+import { patchArea } from '../scene/solar';
 import type { Device, Opening, SceneV1 } from '../scene/types';
 import { deviceFields, Fields, NumberField, windowFields } from './Editor';
 import { floorFraction, sunPatches } from '../scene/solar';
-import { fmtLength, fmtPower, quantity, type UnitSystem } from './units';
+import { fmtLength, fmtPower, fmtSpeed, fmtTemp, quantity, type UnitSystem } from './units';
 
-const GROUPS = ['Cooling', 'Fans', 'Openings', 'Heat'] as const;
+export interface SensorReading {
+  T: number;
+  speed: number;
+  /** °C per minute of room time, if known. */
+  trend?: number;
+}
+
+const GROUPS = ['Cooling', 'Fans', 'Openings', 'Heat', 'Measure'] as const;
 
 const KIND_LABEL: Record<Device['type'], string> = {
+  sensor: 'Temp sensor',
   heat_source: 'Heat source',
   sun: 'Sun',
   sun_patch: 'Sun patch',
@@ -21,6 +31,7 @@ const KIND_LABEL: Record<Device['type'], string> = {
 };
 
 const KIND_ICON: Record<Device['type'] | 'window', string> = {
+  sensor: '🌡',
   window: '▭',
   heat_source: '♨',
   sun: '☀',
@@ -50,6 +61,7 @@ export function ControlsPanel(props: {
   onSelect: (id: string | null) => void;
   onChange: (s: SceneV1) => void;
   onRedefine: () => void;
+  readings: Record<string, SensorReading>;
 }) {
   const { scene, units, tool, selected } = props;
   const room = scene.rooms[0];
@@ -99,6 +111,8 @@ export function ControlsPanel(props: {
         )}
       </section>
 
+      {selected?.startsWith('sunlight:') && <SunlightPanel id={selected} scene={scene} units={units} onChange={props.onChange} />}
+
       {(selDevice || selWindow) && (
         <section className="panel selected">
           <div className="panel-head">
@@ -113,7 +127,8 @@ export function ControlsPanel(props: {
             )}
           </div>
 
-          {selDevice && <DeviceStrength device={selDevice} scene={scene} units={units} onChange={setDevice} />}
+          {selDevice?.type === 'sensor' && <SensorPanel device={selDevice} reading={props.readings[selDevice.id]} height={room.height} units={units} onChange={setDevice} />}
+          {selDevice && selDevice.type !== 'sensor' && <DeviceStrength device={selDevice} scene={scene} units={units} onChange={setDevice} />}
 
           {selWindow && (
             <div className="strength">
@@ -167,7 +182,7 @@ export function ControlsPanel(props: {
                 />
                 <span className="icon">{KIND_ICON[d.type]}</span>
                 <span className="name">{d.id}</span>
-                <span className="kind">{KIND_LABEL[d.type]}</span>
+                <span className="kind">{d.type === 'sensor' && props.readings[d.id] ? fmtTemp(props.readings[d.id].T, units) : KIND_LABEL[d.type]}</span>
               </li>
             ))}
           </ul>
@@ -194,8 +209,9 @@ export function ControlsPanel(props: {
             <NumberField value={scene.outdoor.windFrom} q="deg" units={units} onChange={(v) => props.onChange({ ...scene, outdoor: { ...scene.outdoor, windFrom: ((v % 360) + 360) % 360 } })} />
           </label>
         </div>
+        <Insulation scene={scene} onChange={props.onChange} />
         <p className="muted small">
-          Ceiling {fmtLength(room.height, units)}. The starting temperature applies on Reset; wind only matters with an open window.
+          Ceiling {fmtLength(room.height, units)}. Floor and ceiling are treated as not losing heat (rooms above and below). The starting temperature applies on Reset; wind only matters with an open window.
         </p>
         <div className="row-buttons">
           <button onClick={props.onRedefine}>Redefine space…</button>
@@ -306,5 +322,127 @@ function SunReach(props: { sunId: string; scene: SceneV1; units: UnitSystem }) {
         </p>
       )}
     </>
+  );
+}
+
+function Insulation(props: { scene: SceneV1; onChange: (s: SceneV1) => void }) {
+  const { scene } = props;
+  const env = scene.envelope;
+  const room = scene.rooms[0];
+  if (!env)
+    return (
+      <p className="warn-text small">
+        No insulation settings: walls let no heat through.{' '}
+        <button className="link" onClick={() => props.onChange({ ...scene, envelope: { ...DEFAULT_ENVELOPE } })}>
+          Add average insulation
+        </button>
+      </p>
+    );
+  const setEnv = (patch: Partial<typeof env>) => props.onChange({ ...scene, envelope: { ...env, ...patch } });
+  const ext = env.exteriorEdges ?? room.outline.map((_, i) => i);
+  return (
+    <div className="strength">
+      <span className="group-label">Wall insulation</span>
+      <div className="chips">
+        {INSULATION_LEVELS.map((l) => (
+          <button key={l.label} className={env.wallU === l.wallU ? 'on' : ''} onClick={() => setEnv({ wallU: l.wallU })} title={`U = ${l.wallU} W/m²·K`}>
+            {l.label}
+          </button>
+        ))}
+      </div>
+      <span className="group-label">Air leaks</span>
+      <div className="chips">
+        {LEAK_LEVELS.map((l) => (
+          <button key={l.label} className={env.ach === l.ach ? 'on' : ''} onClick={() => setEnv({ ach: l.ach })} title={`${l.ach} air changes per hour`}>
+            {l.label}
+          </button>
+        ))}
+      </div>
+      <span className="group-label">Walls facing outside</span>
+      <div className="chips">
+        {room.outline.map((_, i) => (
+          <button
+            key={i}
+            className={ext.includes(i) ? 'on' : ''}
+            onClick={() => {
+              const next = ext.includes(i) ? ext.filter((e) => e !== i) : [...ext, i].sort((a, b) => a - b);
+              setEnv({ exteriorEdges: next.length === room.outline.length ? undefined : next });
+            }}
+          >
+            Wall {i + 1}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const SENSOR_HEIGHTS = [
+  ['Ankle', 0.1],
+  ['Seated', 1.1],
+  ['Standing', 1.7],
+] as const;
+
+function SensorPanel(props: { device: Extract<Device, { type: 'sensor' }>; reading?: SensorReading; height: number; units: UnitSystem; onChange: (d: Device) => void }) {
+  const { device: d, reading: r, units } = props;
+  const near = Math.round((props.height - 0.2) * 100) / 100;
+  return (
+    <div className="strength">
+      <div className="sensor-reading">
+        {r ? (
+          <>
+            <b>{fmtTemp(r.T, units, 1)}</b>
+            <span className="muted">
+              air moving {fmtSpeed(r.speed, units)}
+              {r.trend !== undefined && Math.abs(r.trend) > 0.005 ? ` · ${r.trend > 0 ? 'warming' : 'cooling'} ${(Math.abs(r.trend) * (units === 'imperial' ? 1.8 : 1)).toFixed(2)}°/min` : ''}
+            </span>
+          </>
+        ) : (
+          <span className="muted">Run the simulation to get a reading.</span>
+        )}
+      </div>
+      <span className="group-label">Height</span>
+      <div className="chips">
+        {[...SENSOR_HEIGHTS, ['Ceiling', near] as const].map(([label, z]) => (
+          <button key={label} className={Math.abs(d.pos[2] - z) < 0.01 ? 'on' : ''} onClick={() => props.onChange({ ...d, pos: [d.pos[0], d.pos[1], z] })}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <p className="muted small">At {fmtLength(d.pos[2], units)} above the floor. Sensors only read the air; they don't change it.</p>
+    </div>
+  );
+}
+
+function SunlightPanel(props: { id: string; scene: SceneV1; units: UnitSystem; onChange: (s: SceneV1) => void }) {
+  const { scene, units } = props;
+  const [, sunId, windowId] = props.id.split(':');
+  const patch = sunPatches(scene).find((p) => p.sunId === sunId && p.windowId === windowId);
+  const sun = scene.devices.find((d) => d.id === sunId);
+  if (!patch || !sun || sun.type !== 'sun') return null;
+  const area = patchArea(patch);
+  const setSun = (elevationDeg: number) =>
+    props.onChange({ ...scene, devices: scene.devices.map((d) => (d.id === sun.id ? { ...sun, elevationDeg: Math.max(5, Math.min(85, elevationDeg)) } : d)) });
+  return (
+    <section className="panel selected">
+      <div className="panel-head">
+        <h4>
+          <span className="icon">☀</span> Sunlight through {windowId}
+        </h4>
+      </div>
+      <p className="small">
+        {units === 'imperial' ? `${Math.round(area / 0.0929)} ft²` : `${area.toFixed(1)} m²`} of sunlit floor, {fmtPower(patch.enteringW, units)} of sunlight.
+      </p>
+      <span className="group-label">Make it bigger or smaller</span>
+      <div className="chips">
+        <button onClick={() => props.onChange(resizeWindow(scene, windowId, -0.15))}>Narrower window</button>
+        <button onClick={() => props.onChange(resizeWindow(scene, windowId, 0.15))}>Wider window</button>
+      </div>
+      <div className="chips">
+        <button onClick={() => setSun(sun.elevationDeg + 5)}>Sun higher (shorter)</button>
+        <button onClick={() => setSun(sun.elevationDeg - 5)}>Sun lower (longer)</button>
+      </div>
+      <p className="muted small">The patch is where the sun lands through the window. Drag its sides to resize the window, or its far edge to change how high the sun is.</p>
+    </section>
   );
 }
