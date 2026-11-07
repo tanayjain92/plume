@@ -9,8 +9,9 @@ Plume is a room airflow and heat simulator. **`SPEC.md` is the source of truth**
 | Phase | State |
 |---|---|
 | 1. Solver core | Done. CPU solver, MIC(0)-PCG pressure projection, buoyancy, conservative temperature transport, plan and section slice views |
-| 2. Single room editor | Next |
-| 3–6 | Not started |
+| 2. Single room editor | Done. Open windows (wind + stack effect), vents, window/portable AC, mini split, box/ceiling/tower fans, room editor with drag and live edits |
+| 3. Thermal and controls | Next |
+| 4–6 | Not started |
 
 ## How to work
 
@@ -43,6 +44,8 @@ tests/        Vitest validation suite (mirrors SPEC "Validation tests")
 - Pressure is solved in velocity units (`p̃ = dt·p/(ρ·h)`), so a face correction is `u -= p̃[R] - p̃[L]` and the CG residual equals `-h · divergence`.
 - Temperature uses a conservative finite-volume MUSCL/minmod scheme with sub-stepping, so sealed adiabatic rooms conserve energy exactly (the heater energy-balance test depends on this). Velocity uses semi-Lagrangian RK2 backtracing.
 - Walls are free-slip for tangential velocity and no-penetration for normal velocity.
+- Boundary primitives (all in `src/solver/grid.ts`): **open cells** (`CellType.Open`, Dirichlet pressure = wind + stack effect, outdoor temperature), **flow ports** (fixed normal velocity on fluid/solid faces: vents and AC grilles), **fan regions** (velocity relaxation plus a rated-airflow controller), **AC units** (supply temp = return temp − sensible capacity / ρ·cp·V̇).
+- A sealed region whose ports don't balance can't be divergence free. The solver treats the imbalance as uniform envelope leakage (outdoor air in, or room air out), logs a warning, and `maxDivergence()` measures error relative to that leakage. Never "fix" an imbalance silently.
 
 ## Commands
 

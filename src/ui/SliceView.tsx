@@ -16,7 +16,24 @@ export interface Marker {
   orientation: 'vertical' | 'horizontal';
   /** Position in slice cell coordinates (a for vertical, b for horizontal). */
   at: number;
+}
+
+/** A device drawn on the slice, in slice cell coordinates. */
+export interface Glyph {
+  id: string;
+  a0: number;
+  b0: number;
+  a1: number;
+  b1: number;
+  /** In-plane direction of the air it pushes, unit-ish. */
+  dir?: [number, number];
+  intake?: boolean;
+  color: string;
   label: string;
+  selected: boolean;
+  /** Turned off, or not crossing this slice. */
+  faded: boolean;
+  dashed?: boolean;
 }
 
 interface Props {
@@ -32,14 +49,18 @@ interface Props {
   draftThreshold: number;
   units: UnitSystem;
   marker?: Marker;
+  glyphs: Glyph[];
   dragHint?: string;
-  onDrag?: (a: number, b: number) => void;
+  onPointerDown?: (a: number, b: number) => void;
+  onPointerDrag?: (a: number, b: number) => void;
+  onPointerUp?: () => void;
 }
 
-const SOLID = 1; // CellType.Solid; UI only needs "not fluid"
 const ARROW_REF_SPEED = 0.5; // m/s that draws a full-length arrow
 const STREAK_SECONDS = 0.35;
 const WALL_COLOR = '#2b2f38';
+const OPEN_COLOR = '#6ec6ff';
+const SLAB_HALF = 1.5; // particles live within ±1.5 cells of the slice plane
 
 interface Legend {
   lut: Uint8Array;
@@ -64,25 +85,23 @@ export function SliceView(props: Props) {
   live.current = { props, geom, cellPx, hover };
 
   // Per-slice data derived from the latest frame, consumed by the RAF loop.
-  const sliceData = useRef<{ va: Float32Array; vb: Float32Array; speed: Float32Array; solid: Uint8Array } | null>(null);
+  const sliceData = useRef<{ va: Float32Array; vb: Float32Array; speed: Float32Array; cellKind: Uint8Array } | null>(null);
 
   // Fit the slice to the container width.
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => {
-      const width = el.clientWidth;
-      setCellPx(Math.max(4, Math.min(24, Math.floor(width / geom.W))));
-    });
+    const ro = new ResizeObserver(() => setCellPx(Math.max(4, Math.min(24, Math.floor(el.clientWidth / geom.W)))));
     ro.observe(el);
     return () => ro.disconnect();
   }, [geom.W]);
 
-  // Rebuild the heatmap image and slice velocity arrays when data or color settings change.
+  // Rebuild the heatmap image and slice arrays when data or color settings change.
   useEffect(() => {
     const { W, H, cell } = geom;
-    const solid = new Uint8Array(W * H);
-    for (let b = 0; b < H; b++) for (let a = 0; a < W; a++) solid[a + W * b] = grid.cellType[cell(a, b)] === 0 ? 0 : SOLID;
+    // 0 fluid, 1 solid, 4 open (matches CellType)
+    const cellKind = new Uint8Array(W * H);
+    for (let b = 0; b < H; b++) for (let a = 0; a < W; a++) cellKind[a + W * b] = grid.cellType[cell(a, b)];
 
     if (!heatRef.current) heatRef.current = document.createElement('canvas');
     const heat = heatRef.current;
@@ -91,7 +110,7 @@ export function SliceView(props: Props) {
     const ctx = heat.getContext('2d')!;
     const img = ctx.createImageData(W, H);
 
-    if (!frame) {
+    if (!frame || frame.T.length !== grid.nx * grid.ny * grid.nz) {
       sliceData.current = null;
       ctx.clearRect(0, 0, W, H);
       setLegend(null);
@@ -111,9 +130,8 @@ export function SliceView(props: Props) {
         vb[s] = B[c];
         speed[s] = Math.hypot(frame.ux[c], frame.uy[c], frame.uz[c]);
       }
-    sliceData.current = { va, vb, speed, solid };
+    sliceData.current = { va, vb, speed, cellKind };
 
-    // Field -> [0,1] mapping and legend.
     let lut = LUT_DIVERGING;
     let value: (c: number, s: number) => number;
     let lo: number;
@@ -135,7 +153,7 @@ export function SliceView(props: Props) {
       const arr = field === 'divergence' ? frame.div : frame.p;
       let mx = 0;
       for (let b = 0; b < H; b++)
-        for (let a = 0; a < W; a++) if (!solid[a + W * b]) mx = Math.max(mx, Math.abs(arr[cell(a, b)]));
+        for (let a = 0; a < W; a++) if (cellKind[a + W * b] === 0) mx = Math.max(mx, Math.abs(arr[cell(a, b)]));
       mx = Math.max(mx, field === 'divergence' ? 1e-7 : 1e-6);
       lo = -mx;
       hi = mx;
@@ -146,7 +164,7 @@ export function SliceView(props: Props) {
         left: f(-mx),
         mid: '0',
         right: f(mx),
-        caption: field === 'divergence' ? 'Divergence (should be ~0 everywhere)' : 'Pressure relative to room mean',
+        caption: field === 'divergence' ? 'Divergence error (should be ~0 everywhere)' : 'Pressure relative to room mean',
       };
     }
 
@@ -155,26 +173,25 @@ export function SliceView(props: Props) {
     for (let b = 0; b < H; b++)
       for (let a = 0; a < W; a++) {
         const s = a + W * b;
-        if (solid[s]) continue;
+        if (cellKind[s] !== 0) continue;
         const t = Math.max(0, Math.min(1, (value(cell(a, b), s) - lo) / span));
         const li = Math.round(t * 255) * 3;
         rgb[s * 3] = lut[li];
         rgb[s * 3 + 1] = lut[li + 1];
         rgb[s * 3 + 2] = lut[li + 2];
       }
-    // Solid cells borrow a fluid neighbor's color so smoothing doesn't bleed wall gray into the room.
+    // Non-fluid cells borrow a fluid neighbor's color so smoothing doesn't bleed wall gray into the room.
     for (let b = 0; b < H; b++)
       for (let a = 0; a < W; a++) {
         const s = a + W * b;
-        if (!solid[s]) continue;
+        if (cellKind[s] === 0) continue;
         const nbs = [a > 0 ? s - 1 : -1, a < W - 1 ? s + 1 : -1, b > 0 ? s - W : -1, b < H - 1 ? s + W : -1];
-        const nb = nbs.find((n) => n >= 0 && !solid[n]);
+        const nb = nbs.find((nn) => nn >= 0 && cellKind[nn] === 0);
         if (nb === undefined) continue;
         rgb[s * 3] = rgb[nb * 3];
         rgb[s * 3 + 1] = rgb[nb * 3 + 1];
         rgb[s * 3 + 2] = rgb[nb * 3 + 2];
       }
-    // Flip vertically so +b points up.
     for (let b = 0; b < H; b++)
       for (let a = 0; a < W; a++) {
         const s = a + W * b;
@@ -188,7 +205,7 @@ export function SliceView(props: Props) {
     setLegend(lg);
   }, [frame, geom, field, props.tempCenter, props.tempHalfRange, units, grid]);
 
-  // Animation loop: heatmap, walls, drafts, arrows, particles, markers.
+  // Animation loop: heatmap, walls, drafts, arrows, particles, glyphs, markers.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -196,45 +213,20 @@ export function SliceView(props: Props) {
     let raf = 0;
     let last = performance.now();
     const N_MAX = 2500;
+    // 3D particle positions in grid cell coordinates (cell i spans [i, i+1)).
     const px = new Float32Array(N_MAX);
     const py = new Float32Array(N_MAX);
+    const pz = new Float32Array(N_MAX);
     const age = new Float32Array(N_MAX);
     const life = new Float32Array(N_MAX);
-    let seeded = false;
     let seededFor = '';
-
-    const respawn = (i: number, W: number, H: number, solid: Uint8Array) => {
-      for (let tries = 0; tries < 50; tries++) {
-        const x = Math.random() * W;
-        const y = Math.random() * H;
-        if (!solid[Math.floor(x) + W * Math.floor(y)]) {
-          px[i] = x;
-          py[i] = y;
-          age[i] = 0;
-          life[i] = 2 + Math.random() * 4;
-          return;
-        }
-      }
-    };
-
-    const sampleVel = (x: number, y: number, W: number, H: number, va: Float32Array, vb: Float32Array): [number, number] => {
-      const gx = Math.max(0, Math.min(W - 1.001, x - 0.5));
-      const gy = Math.max(0, Math.min(H - 1.001, y - 0.5));
-      const i0 = Math.floor(gx);
-      const j0 = Math.floor(gy);
-      const fx = gx - i0;
-      const fy = gy - j0;
-      const s = i0 + W * j0;
-      const bil = (a: Float32Array) =>
-        (a[s] * (1 - fx) + a[s + 1] * fx) * (1 - fy) + (a[s + W] * (1 - fx) + a[s + W + 1] * fx) * fy;
-      return [bil(va), bil(vb)];
-    };
 
     const draw = (now: number) => {
       raf = requestAnimationFrame(draw);
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
       const { props: p, geom: g, cellPx: cp, hover: hv } = live.current;
+      const { grid: gr, frame: fr } = p;
       const { W, H } = g;
       const cssW = W * cp;
       const cssH = H * cp;
@@ -259,21 +251,22 @@ export function SliceView(props: Props) {
       const X = (a: number) => a * cp;
       const Y = (b: number) => (H - b) * cp;
 
-      // Walls / solids, crisp.
       if (sd) {
-        ctx.fillStyle = WALL_COLOR;
         for (let b = 0; b < H; b++)
-          for (let a = 0; a < W; a++) if (sd.solid[a + W * b]) ctx.fillRect(X(a), Y(b + 1), cp + 0.5, cp + 0.5);
+          for (let a = 0; a < W; a++) {
+            const k = sd.cellKind[a + W * b];
+            if (k === 0) continue;
+            ctx.fillStyle = k === 4 ? OPEN_COLOR : WALL_COLOR;
+            ctx.fillRect(X(a), Y(b + 1), cp + 0.5, cp + 0.5);
+          }
       }
 
       if (sd && p.overlays.drafts) {
         ctx.fillStyle = 'rgba(190, 120, 255, 0.28)';
-        ctx.strokeStyle = 'rgba(210, 160, 255, 0.55)';
-        ctx.lineWidth = 1;
         for (let b = 0; b < H; b++)
           for (let a = 0; a < W; a++) {
             const s = a + W * b;
-            if (!sd.solid[s] && sd.speed[s] > p.draftThreshold) ctx.fillRect(X(a), Y(b + 1), cp, cp);
+            if (sd.cellKind[s] === 0 && sd.speed[s] > p.draftThreshold) ctx.fillRect(X(a), Y(b + 1), cp, cp);
           }
       }
 
@@ -283,70 +276,125 @@ export function SliceView(props: Props) {
         for (let b = Math.floor(stride / 2); b < H; b += stride)
           for (let a = Math.floor(stride / 2); a < W; a += stride) {
             const s = a + W * b;
-            if (sd.solid[s]) continue;
+            if (sd.cellKind[s] !== 0) continue;
             const vx = sd.va[s];
             const vy = sd.vb[s];
             const sp = Math.hypot(vx, vy);
             if (sp < 0.005) continue;
             const frac = Math.min(1, sp / ARROW_REF_SPEED);
-            const len = Math.max(3, frac * stride * cp * 0.9);
-            const ux = vx / sp;
-            const uy = -vy / sp; // canvas y is down
-            const x0 = X(a + 0.5) - (ux * len) / 2;
-            const y0 = Y(b + 0.5) - (uy * len) / 2;
-            const x1 = x0 + ux * len;
-            const y1 = y0 + uy * len;
-            ctx.strokeStyle = `rgba(20, 22, 28, ${0.3 + 0.7 * frac})`;
-            ctx.lineWidth = 1.6;
-            ctx.beginPath();
-            ctx.moveTo(x0, y0);
-            ctx.lineTo(x1, y1);
-            const head = Math.min(6, len * 0.4);
-            ctx.lineTo(x1 - ux * head - uy * head * 0.5, y1 - uy * head + ux * head * 0.5);
-            ctx.moveTo(x1, y1);
-            ctx.lineTo(x1 - ux * head + uy * head * 0.5, y1 - uy * head - ux * head * 0.5);
-            ctx.stroke();
+            drawArrow(ctx, X(a + 0.5), Y(b + 0.5), vx / sp, -vy / sp, Math.max(3, frac * stride * cp * 0.9), `rgba(20, 22, 28, ${0.3 + 0.7 * frac})`, 1.6);
           }
       }
 
-      if (sd && p.overlays.particles) {
-        const key = `${W}x${H}`;
+      // 3D particles inside a thin slab around the slice, projected onto it.
+      if (sd && fr && p.overlays.particles && fr.ux.length === gr.nx * gr.ny * gr.nz) {
+        const { nx, ny, nz } = gr;
+        const ext = [nx, ny, nz];
+        const nAxis = p.axis === 'x' ? 0 : p.axis === 'y' ? 1 : 2;
+        const aAxis = g.axisA === 'x' ? 0 : 1;
+        const bAxis = g.axisB === 'y' ? 1 : 2;
+        const center = p.index + 0.5;
         const count = Math.min(N_MAX, Math.round(W * H * 1.2));
-        if (!seeded || seededFor !== key) {
+        const pos = [px, py, pz];
+        const fluidAt = (x: number, y: number, z: number) => {
+          const i = Math.floor(x);
+          const j = Math.floor(y);
+          const k = Math.floor(z);
+          if (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz) return false;
+          return gr.cellType[i + nx * (j + ny * k)] === 0;
+        };
+        const respawn = (i: number) => {
+          for (let tries = 0; tries < 40; tries++) {
+            const q = [0, 0, 0];
+            q[aAxis] = Math.random() * ext[aAxis];
+            q[bAxis] = Math.random() * ext[bAxis];
+            q[nAxis] = center + (Math.random() * 2 - 1) * SLAB_HALF;
+            if (fluidAt(q[0], q[1], q[2])) {
+              px[i] = q[0];
+              py[i] = q[1];
+              pz[i] = q[2];
+              age[i] = 0;
+              life[i] = 2 + Math.random() * 4;
+              return;
+            }
+          }
+          life[i] = 0;
+        };
+        const key = `${p.axis}:${p.index}:${nx}x${ny}x${nz}`;
+        if (seededFor !== key) {
           for (let i = 0; i < count; i++) {
-            respawn(i, W, H, sd.solid);
+            respawn(i);
             age[i] = Math.random() * life[i];
           }
-          seeded = true;
           seededFor = key;
         }
-        const ih = 1 / grid.h;
+        const ih = 1 / gr.h;
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
         ctx.lineWidth = 1.1;
         ctx.beginPath();
         for (let i = 0; i < count; i++) {
-          const [vx, vy] = sampleVel(px[i], py[i], W, H, sd.va, sd.vb);
-          // particles move at true speed: m/s -> cells/s
-          px[i] += vx * ih * dt;
+          const vx = sample3(fr.ux, nx, ny, nz, px[i], py[i], pz[i]);
+          const vy = sample3(fr.uy, nx, ny, nz, px[i], py[i], pz[i]);
+          const vz = sample3(fr.uz, nx, ny, nz, px[i], py[i], pz[i]);
+          px[i] += vx * ih * dt; // particles move at true speed: m/s -> cells/s
           py[i] += vy * ih * dt;
+          pz[i] += vz * ih * dt;
           age[i] += dt;
-          const ci = Math.floor(px[i]) + W * Math.floor(py[i]);
-          if (age[i] > life[i] || px[i] < 0 || py[i] < 0 || px[i] >= W || py[i] >= H || sd.solid[ci]) {
-            respawn(i, W, H, sd.solid);
+          if (age[i] > life[i] || Math.abs(pos[nAxis][i] - center) > SLAB_HALF || !fluidAt(px[i], py[i], pz[i])) {
+            respawn(i);
             continue;
           }
-          const tail = Math.max(0.15, Math.hypot(vx, vy) * ih * STREAK_SECONDS);
-          const sp = Math.hypot(vx, vy) || 1;
-          ctx.moveTo(X(px[i]), Y(py[i]));
-          ctx.lineTo(X(px[i] - (vx / sp) * tail), Y(py[i] - (vy / sp) * tail));
+          const v = [vx, vy, vz];
+          const va = v[aAxis];
+          const vb = v[bAxis];
+          const sp = Math.hypot(va, vb) || 1;
+          const tail = Math.max(0.15, Math.hypot(va, vb) * ih * STREAK_SECONDS);
+          const a = pos[aAxis][i];
+          const b = pos[bAxis][i];
+          ctx.moveTo(X(a), Y(b));
+          ctx.lineTo(X(a - (va / sp) * tail), Y(b - (vb / sp) * tail));
         }
         ctx.stroke();
+      }
+
+      // Device glyphs.
+      ctx.font = '11px Inter, Segoe UI, system-ui, sans-serif';
+      for (const gl of p.glyphs) {
+        const x0 = X(Math.min(gl.a0, gl.a1));
+        const x1 = X(Math.max(gl.a0, gl.a1));
+        const y0 = Y(Math.max(gl.b0, gl.b1));
+        const y1 = Y(Math.min(gl.b0, gl.b1));
+        const w = Math.max(3, x1 - x0);
+        const hgt = Math.max(3, y1 - y0);
+        ctx.globalAlpha = gl.faded ? 0.35 : 1;
+        ctx.fillStyle = gl.color + '33';
+        ctx.fillRect(x0, y0, w, hgt);
+        ctx.setLineDash(gl.dashed ? [4, 3] : []);
+        ctx.strokeStyle = gl.selected ? '#ffd250' : gl.color;
+        ctx.lineWidth = gl.selected ? 2.5 : 1.5;
+        ctx.strokeRect(x0, y0, w, hgt);
+        ctx.setLineDash([]);
+        if (gl.dir && Math.hypot(gl.dir[0], gl.dir[1]) > 0.15) {
+          const l = Math.hypot(gl.dir[0], gl.dir[1]);
+          const ux = gl.dir[0] / l;
+          const uy = -gl.dir[1] / l;
+          const cx = x0 + w / 2;
+          const cy = y0 + hgt / 2;
+          const len = Math.max(18, Math.min(40, Math.max(w, hgt))) * Math.min(1, l + 0.3);
+          if (gl.intake) drawArrow(ctx, cx - ux * len, cy - uy * len, ux, uy, len, gl.color, 2.2);
+          else drawArrow(ctx, cx + (ux * len) / 2, cy + (uy * len) / 2, ux, uy, len, gl.color, 2.2);
+        }
+        if (gl.selected || cp >= 10) {
+          ctx.fillStyle = gl.selected ? '#ffd250' : '#e7e9ee';
+          ctx.fillText(gl.label, x0, y0 - 3);
+        }
+        ctx.globalAlpha = 1;
       }
 
       if (p.marker) {
         ctx.save();
         ctx.setLineDash([6, 4]);
-        ctx.strokeStyle = 'rgba(255, 210, 80, 0.95)';
+        ctx.strokeStyle = 'rgba(255, 210, 80, 0.8)';
         ctx.lineWidth = 2;
         ctx.beginPath();
         if (p.marker.orientation === 'vertical') {
@@ -368,35 +416,37 @@ export function SliceView(props: Props) {
     };
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [grid]);
+  }, []);
 
   const toCells = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const a = ((e.clientX - rect.left) / rect.width) * geom.W;
-    const b = geom.H - ((e.clientY - rect.top) / rect.height) * geom.H;
-    return { a, b };
+    return {
+      a: ((e.clientX - rect.left) / rect.width) * geom.W,
+      b: geom.H - ((e.clientY - rect.top) / rect.height) * geom.H,
+    };
   };
 
   let readout = ' ';
-  if (hover && frame) {
+  if (hover && frame && frame.T.length === grid.nx * grid.ny * grid.nz) {
     const a = Math.floor(hover.a);
     const b = Math.floor(hover.b);
     if (a >= 0 && b >= 0 && a < geom.W && b < geom.H) {
       const c = geom.cell(a, b);
       const pos = `${geom.axisA} ${fmtLength(cellCenter(grid, geom.axisA, a), units)}, ${geom.axisB} ${fmtLength(cellCenter(grid, geom.axisB, b), units)}`;
-      if (grid.cellType[c] !== 0) readout = `${pos} · wall`;
+      const kind = grid.cellType[c];
+      if (kind === 4) readout = `${pos} · open window`;
+      else if (kind !== 0) readout = `${pos} · wall or solid`;
       else {
         const sp = Math.hypot(frame.ux[c], frame.uy[c], frame.uz[c]);
         const vert = frame.uz[c];
-        readout = `${pos} · ${fmtTemp(frame.T[c], units)} · ${fmtSpeed(sp, units)}${
-          Math.abs(vert) > 0.01 ? (vert > 0 ? ' rising' : ' sinking') : ''
-        }`;
+        readout = `${pos} · ${fmtTemp(frame.T[c], units)} · ${fmtSpeed(sp, units)}${Math.abs(vert) > 0.01 ? (vert > 0 ? ' rising' : ' sinking') : ''}`;
         if (field === 'divergence') readout += ` · div ${frame.div[c].toExponential(1)} 1/s`;
         if (field === 'pressure') readout += ` · ${frame.p[c].toFixed(3)} Pa`;
       }
     }
   }
 
+  const interactive = Boolean(props.onPointerDown);
   return (
     <section className="slice">
       <header className="slice-head">
@@ -406,18 +456,19 @@ export function SliceView(props: Props) {
       <div ref={wrapRef} className="slice-canvas-wrap">
         <canvas
           ref={canvasRef}
-          className={props.onDrag ? 'draggable' : undefined}
+          className={interactive ? 'draggable' : undefined}
           onPointerDown={(e) => {
-            if (!props.onDrag) return;
+            if (!props.onPointerDown) return;
             e.currentTarget.setPointerCapture(e.pointerId);
             const { a, b } = toCells(e);
-            props.onDrag(a, b);
+            props.onPointerDown(a, b);
           }}
           onPointerMove={(e) => {
             const pt = toCells(e);
             setHover(pt);
-            if (props.onDrag && e.buttons & 1) props.onDrag(pt.a, pt.b);
+            if (props.onPointerDrag && e.buttons & 1) props.onPointerDrag(pt.a, pt.b);
           }}
+          onPointerUp={() => props.onPointerUp?.()}
           onPointerLeave={() => setHover(null)}
         />
       </div>
@@ -437,3 +488,39 @@ export function SliceView(props: Props) {
   );
 }
 
+function drawArrow(ctx: CanvasRenderingContext2D, x0: number, y0: number, ux: number, uy: number, len: number, color: string, width: number): void {
+  const x1 = x0 + ux * len;
+  const y1 = y0 + uy * len;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.lineTo(x1, y1);
+  const head = Math.min(7, len * 0.4);
+  ctx.lineTo(x1 - ux * head - uy * head * 0.5, y1 - uy * head + ux * head * 0.5);
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x1 - ux * head + uy * head * 0.5, y1 - uy * head - ux * head * 0.5);
+  ctx.stroke();
+}
+
+/** Trilinear sample of a cell-centered field at grid coordinates (cell i center at i + 0.5). */
+function sample3(a: Float32Array, nx: number, ny: number, nz: number, x: number, y: number, z: number): number {
+  const gx = Math.max(0, Math.min(nx - 1.0001, x - 0.5));
+  const gy = Math.max(0, Math.min(ny - 1.0001, y - 0.5));
+  const gz = Math.max(0, Math.min(nz - 1.0001, z - 0.5));
+  const i = gx | 0;
+  const j = gy | 0;
+  const k = gz | 0;
+  const fx = gx - i;
+  const fy = gy - j;
+  const fz = gz - k;
+  const nxy = nx * ny;
+  const b = i + nx * (j + ny * k);
+  const c00 = a[b] + fx * (a[b + 1] - a[b]);
+  const c10 = a[b + nx] + fx * (a[b + nx + 1] - a[b + nx]);
+  const c01 = a[b + nxy] + fx * (a[b + nxy + 1] - a[b + nxy]);
+  const c11 = a[b + nxy + nx] + fx * (a[b + nxy + nx + 1] - a[b + nxy + nx]);
+  const c0 = c00 + fy * (c10 - c00);
+  const c1 = c01 + fy * (c11 - c01);
+  return c0 + fz * (c1 - c0);
+}

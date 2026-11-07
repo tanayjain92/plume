@@ -589,7 +589,7 @@ export class FluidSolver {
       solverWarn(
         `sealed room air is unbalanced by ${Math.abs(leakFlow).toFixed(4)} m³/s; treating it as envelope leakage ` +
           (leakFlow > 0 ? 'of outdoor air into the room' : 'out of the room') +
-          '. Add a return vent or open a window to balance it.',
+          '. Expected for a single-hose portable AC; otherwise add a matching return vent or open a window to balance it.',
       );
     } else if (Math.abs(leakFlow) < LEAK_WARN / 10) this.leakWarned = false;
 

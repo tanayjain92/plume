@@ -371,3 +371,144 @@ input[type='radio'] {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---------- phase 2 editor ---------- */
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.panel-head h4 {
+  margin: 0;
+  font-size: 14px;
+}
+.small-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+.small-btn.danger {
+  color: var(--bad);
+}
+.row-buttons {
+  display: flex;
+  gap: 8px;
+}
+.row-buttons button {
+  flex: 1;
+}
+.add-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.add-grid button {
+  text-align: left;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.icon {
+  display: inline-block;
+  width: 1.2em;
+  text-align: center;
+  color: var(--accent);
+}
+.device-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.device-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.device-list li:hover {
+  background: var(--panel-2);
+}
+.device-list li.sel {
+  background: var(--panel-2);
+  outline: 1px solid var(--accent-2);
+}
+.device-list li.off .name,
+.device-list li.off .icon {
+  opacity: 0.45;
+}
+.device-list .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.device-list .kind {
+  color: var(--muted);
+  font-size: 11px;
+}
+.inspector {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field {
+  display: grid;
+  grid-template-columns: 1fr 120px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.field select {
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.field input[type='checkbox'] {
+  justify-self: start;
+}
+.numfield {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.numfield input {
+  padding: 4px 6px;
+  font-size: 12px;
+  min-width: 0;
+}
+.numfield .unit {
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 34px;
+}
+.readout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+}
+.readout-card {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.readout-card.off {
+  opacity: 0.5;
+}

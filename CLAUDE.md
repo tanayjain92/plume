@@ -8,33 +8,36 @@ The project rules live in AGENTS.md so every coding agent reads the same file. T
 
 ## Current state (as of 2026-11-07)
 
-**Phase 1 (solver core) is done**: its done-when check passes. Phase 2 (single room editor) is next.
+**Phases 1 and 2 are done**: both done-when checks pass. Phase 3 (thermal and controls) is next.
 
 What exists:
 
-- **Solver** (`src/solver/`): staggered MAC grid; semi-Lagrangian RK2 velocity advection; explicit viscosity; Boussinesq buoyancy with T_ref = mean room temperature; pressure projection with MIC(0)-preconditioned CG (Float64 internally, warm-started, 4–9 iterations per step on the bedroom grid); conservative MUSCL/minmod temperature transport, sub-stepped. Heat sources (`HeatSource`, negative watts = sink) and box body forces (`MomentumSource`, the basis for phase 2 fans). Walls are free-slip, adiabatic and sealed.
-- **Scene** (`src/scene/`): full v1 scene JSON types for every device in SPEC; voxelizer (rooms + heat sources only, one-cell solid shell, reports every unsupported feature in `warnings`); presets: heated floor patch, cold ceiling patch, SPEC sample bedroom.
-- **Worker** (`src/worker/`): runs the solver loop, posts cell-centered T/velocity/divergence/pressure frames, forwards `solverWarn` messages to the UI.
-- **UI** (`src/ui/`): floor plan slice (default 1.1 m) + draggable vertical section (along x or y); fields: temperature (diverging, centered on a settable temperature), air speed, divergence and pressure debug views; overlays: quiver arrows, particle tracers, draft zones; live heat-source sliders; stats row; °F/ft ↔ °C/m switch.
-- **Tests** (`tests/`): 22 passing. Mass conservation, heater energy balance, wall leak, buoyancy direction + plume spreads along ceiling, symmetry, determinism, voxelizer, solver purity. `tests/later.test.ts` holds todos for AC sizing (phase 3), true cold inlet (phase 2) and GPU parity (phase 4).
+- **Solver** (`src/solver/`): staggered MAC grid; semi-Lagrangian RK2 velocity advection; explicit viscosity; Boussinesq buoyancy (T_ref = mean room temperature); MIC(0)-PCG pressure projection (Float64, warm-started); conservative MUSCL/minmod temperature transport. Boundary primitives: open cells (wind + stack-effect pressure), flow ports (vents, AC grilles, with inflow jets), fan regions with a rated-airflow controller, AC units, heat sources, box momentum sources. Unbalanced sealed rooms become logged envelope leakage. `transferStateFrom` carries the flow over when the scene is edited live.
+- **Scene** (`src/scene/`): v1 scene JSON types; voxelizer for rooms, windows (open/closed), window AC, portable AC (single hose), mini split, supply/return vents (auto-mounted on the nearest wall, floor or ceiling), box/ceiling/tower fans, heat sources; shared geometry (`geometry.ts`, also used for editor glyphs); device defaults; presets (spec bedroom, cross ventilation, ceiling supply + return, heated floor patch, cold ceiling patch).
+- **Worker** (`src/worker/`): runs the loop; coalesces rapid scene edits; posts fields, stats and a per-device report (AC supply/return/cooling, fan delivered airflow, vent flows).
+- **UI** (`src/ui/`): plan + draggable section; temperature (centered on the AC setpoint), speed, divergence and pressure views; arrows, 3D particle tracers in a slab around each slice, draft zones; room editor (size, temps, wind); add/select/delete/toggle devices; per-type inspector in display units; drag devices on the plan (windows slide along their wall); live device readout; open/save `.plume.json`; °F/ft ↔ °C/m.
+- **Tests** (`tests/`): 40 passing, ~80 s. Phase 1 suite plus open boundaries (supply out a window, cross-ventilation, stack effect, leakage), fans (direction, rated airflow, oscillation), cold inlet sinking, AC sizing (23.6 °F, SPEC's 24 °F check), AC energy removal, portable AC infiltration, mini split, live-edit transfer, determinism with devices. GPU parity is the only todo.
 
-Verified in headless Chrome: the floor patch plume rises and spreads along the ceiling; max divergence stays around 1e-5 1/s.
+Verified in headless Chrome: every device type changes the flow visibly; window AC reads Δ 23.6 °F / 5,600 BTU/h sensible; fans hold ~100% of rated airflow.
 
 ## Known gaps and caveats
 
-- **Performance:** ~45 ms/step on the 40 × 36 × 27 bedroom (~1× realtime). Velocity advection is ~2/3 of the cost. The phase 4 target (30 min in under a minute) is ~30× away.
-- **Heater energy test passes by construction** (transport is exactly conservative) and runs only 10 s of room time; it checks bookkeeping more than physics.
-- **Symmetry tolerance is 1e-4 relative**, chosen without measuring the actual error; looser than SPEC's "within float error". Measure and tighten.
-- **Particles are 2D**: advected only by in-plane velocity of the slice, so they bunch up or vanish where flow crosses the slice. Phase 2's done-when check relies on the particle view, so consider 3D particles there.
-- **Slice snapping:** slices snap to cell centers, so the slider label (e.g. 3.6 ft) and view title (3.8 ft) can disagree.
-- **Cold-air buoyancy test** uses a negative heat source, not a real inlet.
+- **Performance:** ~45 ms/step on an empty bedroom, slower with fast jets (more CFL sub-steps): 0.4–1× realtime. The phase 4 target (30 min in under a minute) is 30–75× away.
+- **Fan model is calibrated, not derived:** a controller scales each fan's forcing until the measured velocity through it equals its rating. Fans take a few seconds to spin up (ceiling fans ~6–8 s). A blocked fan caps its gain and logs a warning.
+- **Open windows have no discharge coefficient:** cross-ventilation flow is an upper bound (about 1.6× a real window's).
+- **AC runs continuously:** setpoint is stored but thermostat cycling is phase 3. Mini split SHR is fixed at 0.7 (the scene format has no field).
+- **Leaks:** door undercuts and AC gap leak faces (sqrt-pressure law) are not built yet (phase 5).
+- **Heater energy test passes by construction** and runs only 10 s; **symmetry tolerance** (1e-4 relative) was never measured and tightened.
+- **Slice snapping:** slices snap to cell centers.
+- Fixed device sizes (window AC 0.6 × 0.4 m, mini split head, portable AC body, tower fan slot) live in `DIMS` in `src/scene/geometry.ts`.
 
-## Next: phase 2 notes
+## Next: phase 3 notes
 
-- Inlets, outlets and open windows break the sealed-room assumption: `PressureSolver` currently removes the mean per component (pure Neumann). Open/outlet cells need Dirichlet pressure, and inlet faces need prescribed velocities that projection does not overwrite.
-- Fans: build actuator disks / tower fan slots on top of `MomentumSource`; convert CFM once in the voxelizer.
-- Window AC: supply jet + return intake on the same unit, supply temperature drop capped by sensible capacity (SPEC "AC math").
-- Phase 4 caveat: MIC(0) is sequential and the pressure solve is Float64; the WebGPU port needs a parallel preconditioner/multigrid and a deliberate Float32 parity tolerance.
+- Wall and window conduction: solid shell cells get U-values; exchange heat with the adjacent fluid cell (`walls[]`, `glazingU`, outdoor temp). Solar gain on closed windows (`outdoor.solar`).
+- Infiltration (ACH): reuse the leakage machinery (outdoor air in at outdoor temp, spread over exterior walls).
+- Thermostat: AC compressor on/off around the setpoint with a deadband; fan keeps running. `AcUnit` already exposes return temperature.
+- Energy balance panel: per-source watts (AC, sun, walls, people, windows, leakage) should net to ~0 at steady state; test it.
+- Stats panel + uPlot temperature chart.
 
 ## Workflow
 

@@ -1,12 +1,16 @@
-import type { SolverStats } from '../solver/solver';
+import type { DeviceReport, SolverStats } from '../solver/solver';
 import type { SceneV1 } from '../scene/types';
 
 export type ToWorker =
-  | { type: 'load'; scene: SceneV1 }
+  /**
+   * Load or update the scene. With keepState, the running flow carries over
+   * when the grid size is unchanged (live edits); otherwise the sim restarts.
+   * Rapid updates (dragging) are coalesced: only the latest is applied.
+   */
+  | { type: 'scene'; scene: SceneV1; keepState: boolean }
   | { type: 'run'; running: boolean }
   /** Target sim seconds per wall second; 0 = as fast as possible. */
   | { type: 'speed'; speed: number }
-  | { type: 'heat'; id: string; watts?: number; enabled?: boolean }
   | { type: 'reset' }
   | { type: 'step' };
 
@@ -19,12 +23,6 @@ export interface GridInfo {
   cellType: Uint8Array;
 }
 
-export interface SourceInfo {
-  id: string;
-  watts: number;
-  enabled: boolean;
-}
-
 export interface FrameStats extends SolverStats {
   /** Solver steps per wall-clock second over the last chunk. */
   stepsPerSec: number;
@@ -34,6 +32,7 @@ export interface FrameStats extends SolverStats {
 
 export interface Frame {
   stats: FrameStats;
+  devices: DeviceReport;
   /** Cell-centered fields, flat index i + nx*(j + ny*k). */
   T: Float32Array;
   ux: Float32Array;
@@ -44,7 +43,7 @@ export interface Frame {
 }
 
 export type FromWorker =
-  | { type: 'ready'; grid: GridInfo; sources: SourceInfo[]; warnings: string[] }
+  | { type: 'ready'; grid: GridInfo; warnings: string[]; restarted: boolean }
   | ({ type: 'frame' } & Frame)
   | { type: 'warn'; message: string }
   | { type: 'error'; message: string };

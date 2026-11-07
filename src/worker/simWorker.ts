@@ -11,6 +11,8 @@ const CHUNK_MS = 30; // wall time spent stepping before posting a frame
 
 let scene: SceneV1 | null = null;
 let solver: FluidSolver | null = null;
+let pending: { scene: SceneV1; keepState: boolean } | null = null;
+let applyTimer: ReturnType<typeof setTimeout> | null = null;
 let running = false;
 let speed = 0;
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -23,40 +25,57 @@ function post(msg: FromWorker, transfer: Transferable[] = []): void {
 
 setSolverLogger((message) => post({ type: 'warn', message }));
 
-function load(next: SceneV1): void {
-  scene = next;
-  const { voxels, warnings } = voxelize(next);
-  solver = new FluidSolver(voxels);
-  post({
-    type: 'ready',
-    grid: {
-      nx: voxels.nx,
-      ny: voxels.ny,
-      nz: voxels.nz,
-      h: voxels.h,
-      origin: voxels.origin,
-      cellType: voxels.cellType.slice(),
-    },
-    sources: solver.heatSources.map((s) => ({ id: s.id, watts: s.watts, enabled: s.enabled })),
-    warnings,
-  });
-  postFrame(0, 0);
+/** Voxelize the latest pending scene and swap in a new solver, carrying the flow over when possible. */
+function applyPending(): void {
+  applyTimer = null;
+  if (!pending) return;
+  const next = pending;
+  pending = null;
+  try {
+    const { voxels, warnings } = voxelize(next.scene);
+    const fresh = new FluidSolver(voxels);
+    const sameGrid = solver && solver.nx === voxels.nx && solver.ny === voxels.ny && solver.nz === voxels.nz;
+    const keep = Boolean(next.keepState && solver && sameGrid);
+    if (keep) fresh.transferStateFrom(solver!);
+    solver = fresh;
+    scene = next.scene;
+    post({
+      type: 'ready',
+      grid: { nx: voxels.nx, ny: voxels.ny, nz: voxels.nz, h: voxels.h, origin: voxels.origin, cellType: voxels.cellType.slice() },
+      warnings,
+      restarted: !keep,
+    });
+    postFrame(0, 0);
+  } catch (err) {
+    post({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 function postFrame(stepsPerSec: number, realtimeFactor: number): void {
   if (!solver) return;
   const [ux, uy, uz] = solver.cellVelocity();
   const T = solver.T.slice();
-  const div = solver.divergence();
+  const div = solver.divergenceError();
   const p = solver.pressurePa();
   post(
-    { type: 'frame', stats: { ...solver.stats(), stepsPerSec, realtimeFactor }, T, ux, uy, uz, div, p },
+    {
+      type: 'frame',
+      stats: { ...solver.stats(), stepsPerSec, realtimeFactor },
+      devices: solver.deviceReport(),
+      T,
+      ux,
+      uy,
+      uz,
+      div,
+      p,
+    },
     [T.buffer, ux.buffer, uy.buffer, uz.buffer, div.buffer, p.buffer],
   );
 }
 
 function tick(): void {
   timer = null;
+  if (pending) applyPending();
   if (!running || !solver) return;
   const now = performance.now();
   if (speed > 0) simDebt = Math.min(simDebt + ((now - lastTick) / 1000) * speed, 2 * speed); // cap backlog to 2 s
@@ -90,11 +109,17 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
   const msg = ev.data;
   try {
     switch (msg.type) {
-      case 'load':
-        load(msg.scene);
+      case 'scene':
+        pending = { scene: msg.scene, keepState: msg.keepState };
+        // While running, the next tick applies it; otherwise apply soon (coalescing bursts).
+        if (!running && applyTimer === null) applyTimer = setTimeout(applyPending, 0);
         break;
       case 'reset':
-        if (scene) load(scene);
+        if (scene) {
+          solver = null;
+          pending = { scene, keepState: false };
+          applyPending();
+        }
         break;
       case 'run':
         setRunning(msg.running);
@@ -103,22 +128,8 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
         speed = msg.speed;
         simDebt = 0;
         break;
-      case 'heat':
-        solver?.setHeatSource(msg.id, { watts: msg.watts, enabled: msg.enabled });
-        if (scene) {
-          // keep the scene in sync so Reset keeps the user's edits
-          scene = {
-            ...scene,
-            devices: scene.devices.map((d) =>
-              d.id === msg.id && d.type === 'heat_source'
-                ? { ...d, watts: msg.watts ?? d.watts, enabled: msg.enabled ?? d.enabled }
-                : d,
-            ),
-          };
-        }
-        if (!running) postFrame(0, 0);
-        break;
       case 'step':
+        if (pending) applyPending();
         if (solver) {
           solver.step();
           postFrame(0, 0);
