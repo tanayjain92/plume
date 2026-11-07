@@ -91,7 +91,7 @@ export const TOOLS: Tool[] = [
   { kind: 'tower_fan', label: 'Tower fan', group: 'Fans', icon: '▮', hint: 'Click the floor. It aims at the middle of the room.' },
   { kind: 'box_fan', label: 'Box fan', group: 'Fans', icon: '▣', hint: 'Click the floor. It aims at the middle of the room.' },
   { kind: 'window', label: 'Window', group: 'Openings', icon: '▭', wall: true, hint: 'Click a wall to add an open window.' },
-  { kind: 'sun', label: 'Sunshine', group: 'Heat', icon: '☀', hint: 'Click the floor where sunlight lands.' },
+  { kind: 'sun', label: 'Sunshine', group: 'Heat', icon: '☀', hint: 'Click outside the room, on the side the sun is. Then drag its arrow to aim it at a window.' },
   { kind: 'person', label: 'Person', group: 'Heat', icon: '☺', hint: 'Click where someone is.' },
   { kind: 'heater', label: 'Space heater', group: 'Heat', icon: '♨', hint: 'Click the floor.' },
   { kind: 'computer', label: 'Computer', group: 'Heat', icon: '⌨', hint: 'Click where the PC is.' },
@@ -162,6 +162,19 @@ export function placeTool(scene: SceneV1, kind: ToolKind, x: number, y: number):
     return { scene: { ...scene, devices: [...scene.devices, dev] }, id: dev.id };
   }
 
+  if (kind === 'sun') {
+    if (inside) return { error: 'Put the sun outside the room, on the side it shines from.' };
+    const heading = aimAtCenter(room, x, y);
+    const existing = scene.devices.find((d) => d.type === 'sun');
+    if (existing && existing.type === 'sun') {
+      // There's one sun: placing it again moves it and re-aims it at the room.
+      const moved: Device = { ...existing, pos: [round(x), round(y), 0], heading };
+      return { scene: { ...scene, devices: scene.devices.map((d) => (d.id === existing.id ? moved : d)) }, id: existing.id };
+    }
+    const sun: Device = { id: 'Sun', type: 'sun', pos: [round(x), round(y), 0], heading, elevationDeg: 35, wm2: 800, enabled: true };
+    return { scene: { ...scene, devices: [...scene.devices, sun] }, id: sun.id };
+  }
+
   if (!inside) return { error: 'Click inside the room.' };
   const pos = (z: number): [number, number, number] => [round(x), round(y), round(z)];
   const aim = aimAtCenter(room, x, y);
@@ -184,9 +197,6 @@ export function placeTool(scene: SceneV1, kind: ToolKind, x: number, y: number):
       break;
     case 'box_fan':
       dev = { id: uniqueId(scene, 'Box fan'), type: 'box_fan', pos: pos(0), heading: aim, diameter: 0.5, airflowCfm: 1300, enabled: true };
-      break;
-    case 'sun':
-      dev = { id: uniqueId(scene, 'Sunshine'), type: 'sun_patch', pos: pos(0), size: [1.0, 1.2], wm2: 300, enabled: true };
       break;
     case 'person':
       dev = { id: uniqueId(scene, 'Person'), type: 'heat_source', pos: pos(0), size: [0.4, 0.3, 1.7], watts: 100, enabled: true };
@@ -266,6 +276,21 @@ export function strengthFor(d: Device): Strength<Device> | null {
       return flowStrength<typeof d>('Fan speed', 150, 250, 350, 500) as Strength<Device>;
     case 'box_fan':
       return flowStrength<typeof d>('Fan speed', 800, 1300, 1800, 2500) as Strength<Device>;
+    case 'sun':
+      return {
+        label: 'Sunlight',
+        chips: [
+          { label: 'Hazy', value: 300 },
+          { label: 'Sunny', value: 600 },
+          { label: 'Clear sky', value: 850 },
+        ],
+        min: 0,
+        max: 1000,
+        step: 10,
+        q: 'wm2',
+        get: (x) => (x as typeof d).wm2,
+        set: (x, v) => ({ ...(x as typeof d), wm2: v }),
+      };
     case 'sun_patch':
       return {
         label: 'Sun strength',

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Frame, GridInfo } from '../worker/protocol';
 import { LUT_DIVERGING, LUT_SEQUENTIAL, lutGradient } from './colormap';
 import { cellCenter, sliceGeometry, type SliceAxis } from './slice';
@@ -36,6 +36,11 @@ export interface Glyph {
   dashed?: boolean;
   /** Placement preview under the cursor. */
   ghost?: boolean;
+  /** Polygon in slice cell coords instead of a box (sunlit floor patches). */
+  poly?: [number, number][];
+  /** Draw an arrow from the center to this point instead of the dir arrow (the sun). */
+  arrowTo?: [number, number];
+  round?: boolean;
 }
 
 interface Props {
@@ -57,6 +62,16 @@ interface Props {
   onPointerDrag?: (a: number, b: number) => void;
   onPointerUp?: () => void;
   onHover?: (pt: { a: number; b: number } | null) => void;
+  onDoubleClick?: (a: number, b: number) => void;
+  /** Margin (cells) drawn around the grid, so things outside the room (the sun) are visible. */
+  pad?: number;
+  /** Resize/aim handles of the selected object, slice cell coords. */
+  handles?: { id: string; a: number; b: number }[];
+  /** Floating quick-action bar anchored above a point (slice cell coords). */
+  actionBar?: { a: number; b: number; node: ReactNode };
+  /** Room outline in slice cell coords; polygon glyphs are clipped to it. */
+  clipPoly?: [number, number][];
+  cursor?: string;
 }
 
 const ARROW_REF_SPEED = 0.5; // m/s that draws a full-length arrow
@@ -82,6 +97,7 @@ export function SliceView(props: Props) {
   const [cellPx, setCellPx] = useState(12);
   const [hover, setHover] = useState<{ a: number; b: number } | null>(null);
   const [legend, setLegend] = useState<Legend | null>(null);
+  const pad = props.pad ?? 0;
 
   // Latest props for the animation loop without restarting it.
   const live = useRef({ props, geom, cellPx, hover });
@@ -98,7 +114,7 @@ export function SliceView(props: Props) {
     const fit = () => {
       const top = el.getBoundingClientRect().top + window.scrollY;
       const availH = Math.max(240, window.innerHeight - top - 90);
-      setCellPx(Math.max(4, Math.min(28, Math.floor(el.clientWidth / geom.W), Math.floor(availH / geom.H))));
+      setCellPx(Math.max(4, Math.min(28, Math.floor(el.clientWidth / (geom.W + 2 * pad)), Math.floor(availH / (geom.H + 2 * pad)))));
     };
     const ro = new ResizeObserver(fit);
     ro.observe(el);
@@ -107,7 +123,7 @@ export function SliceView(props: Props) {
       ro.disconnect();
       window.removeEventListener('resize', fit);
     };
-  }, [geom.W, geom.H]);
+  }, [geom.W, geom.H, pad]);
 
   // Rebuild the heatmap image and slice arrays when data or color settings change.
   useEffect(() => {
@@ -241,8 +257,9 @@ export function SliceView(props: Props) {
       const { props: p, geom: g, cellPx: cp, hover: hv } = live.current;
       const { grid: gr, frame: fr } = p;
       const { W, H } = g;
-      const cssW = W * cp;
-      const cssH = H * cp;
+      const P = p.pad ?? 0;
+      const cssW = (W + 2 * P) * cp;
+      const cssH = (H + 2 * P) * cp;
       const dpr = window.devicePixelRatio || 1;
       if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
         canvas.width = Math.round(cssW * dpr);
@@ -252,17 +269,25 @@ export function SliceView(props: Props) {
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, cssW, cssH);
+      if (P > 0) {
+        // outdoors
+        ctx.fillStyle = '#18202b';
+        ctx.fillRect(0, 0, cssW, cssH);
+        ctx.fillStyle = 'rgba(144, 151, 167, 0.5)';
+        ctx.font = '11px Inter, Segoe UI, system-ui, sans-serif';
+        ctx.fillText('outside', 6, 14);
+      }
 
       const sd = sliceData.current;
       const heat = heatRef.current;
       if (heat && sd && heat.width === W && heat.height === H) {
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(heat, 0, 0, cssW, cssH);
+        ctx.drawImage(heat, P * cp, P * cp, W * cp, H * cp);
       }
 
-      const X = (a: number) => a * cp;
-      const Y = (b: number) => (H - b) * cp;
+      const X = (a: number) => (a + P) * cp;
+      const Y = (b: number) => (H + P - b) * cp;
 
       if (sd) {
         for (let b = 0; b < H; b++)
@@ -375,6 +400,24 @@ export function SliceView(props: Props) {
       // Device glyphs.
       ctx.font = '11px Inter, Segoe UI, system-ui, sans-serif';
       for (const gl of p.glyphs) {
+        if (gl.poly) {
+          ctx.save();
+          if (p.clipPoly) {
+            ctx.beginPath();
+            p.clipPoly.forEach(([a, b], i) => (i ? ctx.lineTo(X(a), Y(b)) : ctx.moveTo(X(a), Y(b))));
+            ctx.closePath();
+            ctx.clip();
+          }
+          ctx.globalAlpha = gl.faded ? 0.25 : gl.ghost ? 0.4 : 0.55;
+          ctx.fillStyle = gl.color;
+          ctx.beginPath();
+          gl.poly.forEach(([a, b], i) => (i ? ctx.lineTo(X(a), Y(b)) : ctx.moveTo(X(a), Y(b))));
+          ctx.closePath();
+          ctx.fill();
+          ctx.globalAlpha = 1;
+          ctx.restore();
+          continue;
+        }
         const x0 = X(Math.min(gl.a0, gl.a1));
         const x1 = X(Math.max(gl.a0, gl.a1));
         const y0 = Y(Math.max(gl.b0, gl.b1));
@@ -382,14 +425,38 @@ export function SliceView(props: Props) {
         const w = Math.max(3, x1 - x0);
         const hgt = Math.max(3, y1 - y0);
         ctx.globalAlpha = gl.ghost ? 0.75 : gl.faded ? 0.35 : 1;
-        ctx.fillStyle = gl.color + '33';
-        ctx.fillRect(x0, y0, w, hgt);
         ctx.setLineDash(gl.dashed || gl.ghost ? [4, 3] : []);
         ctx.strokeStyle = gl.selected || gl.ghost ? '#ffd250' : gl.color;
         ctx.lineWidth = gl.selected ? 2.5 : 1.5;
-        ctx.strokeRect(x0, y0, w, hgt);
+        if (gl.round) {
+          const r = Math.max(w, hgt) / 2;
+          ctx.fillStyle = gl.color + '99';
+          ctx.beginPath();
+          ctx.arc(x0 + w / 2, y0 + hgt / 2, r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          // rays
+          ctx.beginPath();
+          for (let k = 0; k < 8; k++) {
+            const ang = (k * Math.PI) / 4;
+            ctx.moveTo(x0 + w / 2 + Math.cos(ang) * r * 1.3, y0 + hgt / 2 + Math.sin(ang) * r * 1.3);
+            ctx.lineTo(x0 + w / 2 + Math.cos(ang) * r * 1.7, y0 + hgt / 2 + Math.sin(ang) * r * 1.7);
+          }
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = gl.color + '33';
+          ctx.fillRect(x0, y0, w, hgt);
+          ctx.strokeRect(x0, y0, w, hgt);
+        }
         ctx.setLineDash([]);
-        if (gl.dir && Math.hypot(gl.dir[0], gl.dir[1]) > 0.15) {
+        if (gl.arrowTo) {
+          const cx = x0 + w / 2;
+          const cy = y0 + hgt / 2;
+          const tx = X(gl.arrowTo[0]);
+          const ty = Y(gl.arrowTo[1]);
+          const len = Math.hypot(tx - cx, ty - cy);
+          if (len > 4) drawArrow(ctx, cx, cy, (tx - cx) / len, (ty - cy) / len, len, gl.color, 2.5);
+        } else if (gl.dir && Math.hypot(gl.dir[0], gl.dir[1]) > 0.15) {
           const l = Math.hypot(gl.dir[0], gl.dir[1]);
           const ux = gl.dir[0] / l;
           const uy = -gl.dir[1] / l;
@@ -404,6 +471,14 @@ export function SliceView(props: Props) {
           ctx.fillText(gl.label, x0, y0 - 3);
         }
         ctx.globalAlpha = 1;
+      }
+
+      for (const hd of p.handles ?? []) {
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = '#12141a';
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(X(hd.a) - 5, Y(hd.b) - 5, 10, 10);
+        ctx.strokeRect(X(hd.a) - 5, Y(hd.b) - 5, 10, 10);
       }
 
       if (p.marker) {
@@ -436,8 +511,8 @@ export function SliceView(props: Props) {
   const toCells = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     return {
-      a: ((e.clientX - rect.left) / rect.width) * geom.W,
-      b: geom.H - ((e.clientY - rect.top) / rect.height) * geom.H,
+      a: ((e.clientX - rect.left) / rect.width) * (geom.W + 2 * pad) - pad,
+      b: geom.H + pad - ((e.clientY - rect.top) / rect.height) * (geom.H + 2 * pad),
     };
   };
 
@@ -472,6 +547,11 @@ export function SliceView(props: Props) {
         <canvas
           ref={canvasRef}
           className={interactive ? 'draggable' : undefined}
+          style={props.cursor ? { cursor: props.cursor } : undefined}
+          onDoubleClick={(e) => {
+            const { a, b } = toCells(e as unknown as React.PointerEvent<HTMLCanvasElement>);
+            props.onDoubleClick?.(a, b);
+          }}
           onPointerDown={(e) => {
             if (!props.onPointerDown) return;
             e.currentTarget.setPointerCapture(e.pointerId);
@@ -490,6 +570,18 @@ export function SliceView(props: Props) {
             props.onHover?.(null);
           }}
         />
+        {props.actionBar && (
+          <div
+            className="action-bar"
+            style={{
+              left: Math.max(0, (props.actionBar.a + pad) * cellPx),
+              top: Math.max(0, (geom.H + pad - props.actionBar.b) * cellPx - 46),
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            {props.actionBar.node}
+          </div>
+        )}
       </div>
       <div className="readout">{readout}</div>
       {legend && (

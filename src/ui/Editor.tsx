@@ -32,6 +32,11 @@ export function deviceFields(d: Device, scene: SceneV1): FieldSpec[] {
         { path: 'size.1', label: 'Size y', q: 'len', min: 0 },
         { path: 'size.2', label: 'Size z', q: 'len', min: 0 },
       ];
+    case 'sun':
+      return [
+        { path: 'heading', label: 'Sunlight heading (0° = up the plan)', q: 'deg' },
+        { path: 'elevationDeg', label: 'Sun height above horizon', q: 'deg', min: 5, max: 85 },
+      ];
     case 'sun_patch':
       return [...POS_XY, { path: 'size.0', label: 'Patch size x', q: 'len', min: 0.1 }, { path: 'size.1', label: 'Patch size y', q: 'len', min: 0.1 }];
     case 'window_ac':

@@ -174,7 +174,9 @@ export function headingBox(pos: Vec3, heading: number, width: number, depth: num
 
 export interface DeviceShape {
   id: string;
-  kind: Device['type'] | 'window';
+  kind: Device['type'] | 'window' | 'sunlight';
+  /** Plan polygon for shapes that aren't boxes (sunlit floor patches). */
+  poly?: Vec2[];
   lo: Vec3;
   hi: Vec3;
   /** Direction the device pushes air (unit vector), if any. */
@@ -207,6 +209,18 @@ export function sceneShapes(scene: SceneV1): DeviceShape[] {
           enabled: d.enabled,
         });
         break;
+      case 'sun': {
+        const r = 0.25;
+        shapes.push({
+          id: d.id,
+          kind: d.type,
+          lo: [d.pos[0] - r, d.pos[1] - r, 0],
+          hi: [d.pos[0] + r, d.pos[1] + r, 0.5],
+          dir: headingDir(d.heading),
+          enabled: d.enabled,
+        });
+        break;
+      }
       case 'sun_patch':
         shapes.push({
           id: d.id,

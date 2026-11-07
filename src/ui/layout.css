@@ -347,6 +347,40 @@ details.color-settings {
   color: #ff9c9c;
 }
 
+.select-tool {
+  width: 100%;
+}
+.slice-canvas-wrap {
+  position: relative;
+}
+.action-bar {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  background: rgba(26, 29, 37, 0.96);
+  border: 1px solid rgba(255, 210, 80, 0.55);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+  z-index: 3;
+}
+.action-bar button {
+  padding: 3px 9px;
+  font-size: 12px;
+}
+.action-bar button.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.action-bar .ab-value {
+  font-size: 12px;
+  min-width: 44px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
 @media (max-width: 900px) {
   .app2 {
     grid-template-columns: 1fr;

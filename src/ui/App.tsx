@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { placeTool, TOOLS, type ToolKind } from '../scene/defaults';
+import { hasHeading, placeTool, TOOLS, type ToolKind } from '../scene/defaults';
+import { dragHandle, handlesFor, removeItem, resizeWindow, SUN_ARROW, toggleWindow } from '../scene/editing';
+import { sunPatches } from '../scene/solar';
 import { edgeFrame, pointInPolygon, sceneShapes, type DeviceShape } from '../scene/geometry';
-import type { SceneV1 } from '../scene/types';
+import type { Device, SceneV1 } from '../scene/types';
 import type { Frame, FromWorker, GridInfo, ToWorker } from '../worker/protocol';
 import { ControlsPanel } from './Controls';
 import { SetupScreen } from './SetupScreen';
@@ -28,6 +30,8 @@ const DIV_TOL = 1e-4;
 const GLYPH_COLORS: Record<DeviceShape['kind'], string> = {
   window: '#6ec6ff',
   heat_source: '#ff9f43',
+  sun: '#ffca28',
+  sunlight: '#ffe082',
   sun_patch: '#ffd54f',
   window_ac: '#4dd0e1',
   portable_ac: '#4dd0e1',
@@ -40,7 +44,12 @@ const GLYPH_COLORS: Record<DeviceShape['kind'], string> = {
 };
 
 type ViewMode = 'top' | 'side';
-type Drag = { id: string; a: number; b: number; scene0: SceneV1 };
+type Drag =
+  | { kind: 'move'; id: string; a: number; b: number; scene0: SceneV1 }
+  | { kind: 'handle'; id: string; handle: string; scene0: SceneV1 };
+
+/** Margin around the room in the top view, m: room for the sun outside. */
+const OUTSIDE_MARGIN = 1.2;
 
 export function App() {
   const workerRef = useRef<Worker | null>(null);
@@ -192,11 +201,7 @@ export function App() {
         else setSelected(null);
       }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selected && scene && !showSetup) {
-        setScene({
-          ...scene,
-          openings: scene.openings.filter((o) => o.id !== selected),
-          devices: scene.devices.filter((d) => d.id !== selected && !(d.type === 'window_ac' && d.mountedIn === selected)),
-        });
+        setScene(removeItem(scene, selected));
         setSelected(null);
       }
     };
@@ -238,6 +243,17 @@ export function App() {
 
   const sliceAxis: SliceAxis = view === 'top' ? 'z' : sectionAxis;
   const sliceIndex = grid ? (view === 'top' ? cellAt(grid, 'z', planZ) : cellAt(grid, sectionAxis, sectionPos)) : 1;
+  const padCells = grid && view === 'top' ? Math.round(OUTSIDE_MARGIN / grid.h) : 0;
+
+  /** World plan point -> slice cell coords (top view). */
+  const toCell = (x: number, y: number): [number, number] => {
+    const { h, origin } = grid!;
+    return [(x - origin[0]) / h, (y - origin[1]) / h];
+  };
+  const toWorld = (a: number, b: number): [number, number] => {
+    const { h, origin } = grid!;
+    return [origin[0] + a * h, origin[1] + b * h];
+  };
 
   const toGlyphs = (shapes: DeviceShape[], ghostId?: string): Glyph[] => {
     if (!grid) return [];
@@ -245,9 +261,12 @@ export function App() {
     const ax = sliceAxis === 'z' ? [0, 1] : sliceAxis === 'y' ? [0, 2] : [1, 2];
     const nAxis = sliceAxis === 'x' ? 0 : sliceAxis === 'y' ? 1 : 2;
     const sliceWorld = cellCenter(grid, sliceAxis, sliceIndex);
-    return shapes.map((s) => {
+    const out: Glyph[] = [];
+    for (const s of shapes) {
+      // The sun and its light only make sense from above.
+      if ((s.kind === 'sun' || s.kind === 'sunlight') && sliceAxis !== 'z') continue;
       const crosses = sliceAxis === 'z' || (sliceWorld >= s.lo[nAxis] - 0.3 && sliceWorld <= s.hi[nAxis] + 0.3);
-      return {
+      const g: Glyph = {
         id: s.id,
         a0: (s.lo[ax[0]] - origin[ax[0]]) / h,
         a1: (s.hi[ax[0]] - origin[ax[0]]) / h,
@@ -262,31 +281,49 @@ export function App() {
         dashed: s.kind === 'window' && !s.open,
         ghost: s.id === ghostId,
       };
-    });
+      if (s.poly) g.poly = s.poly.map(([x, y]) => toCell(x, y));
+      if (s.kind === 'sun' && s.dir) {
+        g.round = true;
+        const cx = (s.lo[0] + s.hi[0]) / 2;
+        const cy = (s.lo[1] + s.hi[1]) / 2;
+        g.arrowTo = toCell(cx + s.dir[0] * SUN_ARROW, cy + s.dir[1] * SUN_ARROW);
+        g.dir = undefined;
+      }
+      out.push(g);
+    }
+    return out;
   };
 
-  const shapes = sceneShapes(scene);
+  const sunlight = (s: SceneV1): DeviceShape[] =>
+    sunPatches(s).map((p) => ({ id: `sunlight:${p.sunId}:${p.windowId}`, kind: 'sunlight', poly: p.quad, lo: [0, 0, 0], hi: [0, 0, 0], enabled: true }));
+
+  const shapes = [...sunlight(scene), ...sceneShapes(scene)];
   let glyphs = toGlyphs(shapes);
   // Ghost preview of the active tool under the cursor.
   if (tool && hoverWorld && view === 'top') {
     const r = placeTool(scene, tool, hoverWorld[0], hoverWorld[1]);
     if (!('error' in r)) {
-      const preview = sceneShapes(r.scene).filter((s) => !shapes.some((o) => o.id === s.id));
-      glyphs = [...glyphs, ...toGlyphs(preview, preview.at(-1)?.id).map((g) => ({ ...g, ghost: true }))];
+      const preview = [...sunlight(r.scene), ...sceneShapes(r.scene)].filter((s) => !shapes.some((o) => o.id === s.id) || s.id === r.id);
+      glyphs = [...glyphs.filter((g) => g.id !== r.id), ...toGlyphs(preview).map((g) => ({ ...g, ghost: true }))];
     }
   }
 
-  const toWorld = (a: number, b: number): [number, number] => {
-    const { h, origin } = grid!;
-    return [origin[0] + a * h, origin[1] + b * h];
-  };
+  const handles =
+    grid && view === 'top' && selected && !tool
+      ? handlesFor(scene, selected).map((hd) => {
+          const [a, b] = toCell(hd.x, hd.y);
+          return { id: hd.id, a, b, cursor: hd.cursor };
+        })
+      : [];
+
+  const hitHandle = (a: number, b: number) => handles.find((hd) => Math.hypot(hd.a - a, hd.b - b) < 1.0) ?? null;
 
   const hitTest = (a: number, b: number): Glyph | null => {
     const pad = 0.6;
     let best: Glyph | null = null;
     let bestArea = Infinity;
     for (const g of glyphs) {
-      if (g.ghost || (view === 'side' && g.faded && !g.selected)) continue;
+      if (g.ghost || g.poly || (view === 'side' && g.faded && !g.selected)) continue;
       const [a0, a1] = [Math.min(g.a0, g.a1) - pad, Math.max(g.a0, g.a1) + pad];
       const [b0, b1] = [Math.min(g.b0, g.b1) - pad, Math.max(g.b0, g.b1) + pad];
       if (a < a0 || a > a1 || b < b0 || b > b1) continue;
@@ -299,9 +336,14 @@ export function App() {
     return best;
   };
 
-  const dragDevice = (drag: Drag, a: number, b: number) => {
+  const dragTo = (drag: Drag, a: number, b: number) => {
     if (!grid) return;
     const s0 = drag.scene0;
+    if (drag.kind === 'handle') {
+      const [x, y] = toWorld(a, b);
+      editScene(dragHandle(s0, drag.id, drag.handle, x, y));
+      return;
+    }
     const dx = (a - drag.a) * grid.h;
     const dy = (b - drag.b) * grid.h;
     const r0 = s0.rooms[0];
@@ -317,7 +359,8 @@ export function App() {
     if (dev.type === 'window_ac') return editScene({ ...s0, openings: moveOpening(dev.mountedIn) });
     const x = Math.round((dev.pos[0] + dx) * 20) / 20;
     const y = Math.round((dev.pos[1] + dy) * 20) / 20;
-    if (!pointInPolygon(x, y, r0.outline)) return; // keep it inside the room
+    const inside = pointInPolygon(x, y, r0.outline);
+    if (dev.type === 'sun' ? inside : !inside) return; // the sun stays outside; everything else inside
     editScene({ ...s0, devices: s0.devices.map((d) => (d.id === dev.id ? ({ ...d, pos: [x, y, dev.pos[2]] } as typeof d) : d)) });
   };
 
@@ -330,19 +373,100 @@ export function App() {
       else {
         editScene(r.scene);
         setSelected(r.id);
-        setTool(null);
+        setTool(null); // back to Select
       }
+      return;
+    }
+    const hd = hitHandle(a, b);
+    if (hd && selected) {
+      dragRef.current = { kind: 'handle', id: selected, handle: hd.id, scene0: scene };
       return;
     }
     const hit = hitTest(a, b);
     if (hit) {
       setSelected(hit.id);
-      dragRef.current = view === 'top' ? { id: hit.id, a, b, scene0: scene } : null;
+      dragRef.current = view === 'top' ? { kind: 'move', id: hit.id, a, b, scene0: scene } : null;
     } else {
       setSelected(null);
       dragRef.current = null;
     }
   };
+
+  const onDoubleClick = (a: number, b: number) => {
+    const hit = hitTest(a, b);
+    if (hit && scene.openings.some((o) => o.id === hit.id)) editScene(toggleWindow(scene, hit.id));
+  };
+
+  // Cursor feedback in Select mode.
+  let cursor: string | undefined;
+  if (!tool && hoverWorld && grid) {
+    const [ha, hb] = toCell(hoverWorld[0], hoverWorld[1]);
+    const hd = hitHandle(ha, hb);
+    cursor = hd ? handles.find((x) => x.id === hd.id)!.cursor : hitTest(ha, hb) ? (view === 'top' ? 'move' : 'pointer') : undefined;
+  }
+
+  // Quick actions above the selected object.
+  const selGlyph = glyphs.find((g) => g.id === selected && !g.ghost);
+  const selWindow = scene.openings.find((o) => o.id === selected);
+  const selDevice = scene.devices.find((d) => d.id === selected);
+  const setDev = (next: Device) => editScene({ ...scene, devices: scene.devices.map((d) => (d.id === next.id ? next : d)) });
+  const actionBar =
+    selGlyph && !tool && view === 'top'
+      ? {
+          a: Math.min(selGlyph.a0, selGlyph.a1),
+          b: Math.max(selGlyph.b0, selGlyph.b1),
+          node: (
+            <>
+              {selWindow && (
+                <>
+                  <div className="seg small">
+                    <button className={selWindow.state === 'open' ? 'on' : ''} onClick={() => selWindow.state !== 'open' && editScene(toggleWindow(scene, selWindow.id))}>
+                      Open
+                    </button>
+                    <button className={selWindow.state === 'closed' ? 'on' : ''} onClick={() => selWindow.state !== 'closed' && editScene(toggleWindow(scene, selWindow.id))}>
+                      Closed
+                    </button>
+                  </div>
+                  <button title="Narrower" onClick={() => editScene(resizeWindow(scene, selWindow.id, -0.15))}>
+                    −
+                  </button>
+                  <span className="ab-value">{fmtLength(selWindow.width, units)}</span>
+                  <button title="Wider" onClick={() => editScene(resizeWindow(scene, selWindow.id, 0.15))}>
+                    +
+                  </button>
+                </>
+              )}
+              {selDevice && (
+                <>
+                  <button className={selDevice.enabled ? 'on' : ''} onClick={() => setDev({ ...selDevice, enabled: !selDevice.enabled } as Device)}>
+                    {selDevice.enabled ? 'On' : 'Off'}
+                  </button>
+                  {hasHeading(selDevice) && (
+                    <>
+                      <button title="Rotate left" onClick={() => setDev({ ...selDevice, heading: (((selDevice.heading - (selDevice.type === 'sun' ? 15 : 45)) % 360) + 360) % 360 })}>
+                        ⟲
+                      </button>
+                      <button title="Rotate right" onClick={() => setDev({ ...selDevice, heading: (selDevice.heading + (selDevice.type === 'sun' ? 15 : 45)) % 360 })}>
+                        ⟳
+                      </button>
+                    </>
+                  )}
+                </>
+              )}
+              <button
+                className="danger"
+                title="Remove (Delete key)"
+                onClick={() => {
+                  editScene(removeItem(scene, selected!));
+                  setSelected(null);
+                }}
+              >
+                Remove
+              </button>
+            </>
+          ),
+        }
+      : undefined;
 
   // ---------------------------------------------------------------- render
 
@@ -514,8 +638,14 @@ export function App() {
               draftThreshold={draftThreshold}
               units={units}
               glyphs={glyphs}
+              pad={padCells}
+              handles={handles}
+              actionBar={actionBar}
+              cursor={cursor}
+              clipPoly={view === 'top' ? scene.rooms[0].outline.map(([x, y]) => toCell(x, y)) : undefined}
+              onDoubleClick={onDoubleClick}
               onPointerDown={onDown}
-              onPointerDrag={(a, b) => dragRef.current && dragDevice(dragRef.current, a, b)}
+              onPointerDrag={(a, b) => dragRef.current && dragTo(dragRef.current, a, b)}
               onPointerUp={() => (dragRef.current = null)}
               onHover={(pt) => setHoverWorld(pt ? toWorld(pt.a, pt.b) : null)}
             />

@@ -157,8 +157,25 @@ export interface SunPatchDevice extends DeviceBase {
   wm2: number;
 }
 
+/**
+ * The sun, outside the room. Sunlight travels along `heading` (degrees
+ * clockwise from +y, the direction the light goes) and down at
+ * `elevationDeg` above the horizon. It enters through windows that face it
+ * and lands on the floor as sunlit patches. pos is only where the sun icon is
+ * drawn (outside the room).
+ */
+export interface SunDevice extends DeviceBase {
+  type: 'sun';
+  pos: Vec3;
+  heading: number;
+  elevationDeg: number;
+  /** Direct sunlight on a surface facing the sun, W/m² (clear sky ≈ 800–900). */
+  wm2: number;
+}
+
 export type Device =
   | HeatSourceDevice
+  | SunDevice
   | SunPatchDevice
   | WindowAcDevice
   | PortableAcDevice

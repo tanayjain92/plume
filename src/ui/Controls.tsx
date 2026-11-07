@@ -1,13 +1,15 @@
 import { hasHeading, strengthFor, TOOLS, type ToolKind } from '../scene/defaults';
 import type { Device, Opening, SceneV1 } from '../scene/types';
 import { deviceFields, Fields, NumberField, windowFields } from './Editor';
-import { fmtLength, quantity, type UnitSystem } from './units';
+import { floorFraction, sunPatches } from '../scene/solar';
+import { fmtLength, fmtPower, quantity, type UnitSystem } from './units';
 
 const GROUPS = ['Cooling', 'Fans', 'Openings', 'Heat'] as const;
 
 const KIND_LABEL: Record<Device['type'], string> = {
   heat_source: 'Heat source',
-  sun_patch: 'Sunshine',
+  sun: 'Sun',
+  sun_patch: 'Sun patch',
   window_ac: 'Window AC',
   portable_ac: 'Portable AC',
   mini_split: 'Mini split',
@@ -21,6 +23,7 @@ const KIND_LABEL: Record<Device['type'], string> = {
 const KIND_ICON: Record<Device['type'] | 'window', string> = {
   window: '▭',
   heat_source: '♨',
+  sun: '☀',
   sun_patch: '☀',
   window_ac: '❄',
   portable_ac: '❄',
@@ -70,6 +73,12 @@ export function ControlsPanel(props: {
     <aside className="controls">
       <section className="panel">
         <h3>Controls</h3>
+        <button className={`tool select-tool ${tool === null ? 'on' : ''}`} onClick={() => props.onTool(null)} title="Select objects to move, resize and change them">
+          <span className="tool-icon">↖</span>
+          <span>
+            Select <span className="muted small">· click an object to change it</span>
+          </span>
+        </button>
         {GROUPS.map((g) => (
           <div key={g} className="tool-group">
             <div className="group-label">{g}</div>
@@ -104,7 +113,7 @@ export function ControlsPanel(props: {
             )}
           </div>
 
-          {selDevice && <DeviceStrength device={selDevice} units={units} onChange={setDevice} />}
+          {selDevice && <DeviceStrength device={selDevice} scene={scene} units={units} onChange={setDevice} />}
 
           {selWindow && (
             <div className="strength">
@@ -196,7 +205,7 @@ export function ControlsPanel(props: {
   );
 }
 
-function DeviceStrength(props: { device: Device; units: UnitSystem; onChange: (d: Device) => void }) {
+function DeviceStrength(props: { device: Device; scene: SceneV1; units: UnitSystem; onChange: (d: Device) => void }) {
   const { device: d, units } = props;
   const s = strengthFor(d);
   return (
@@ -251,6 +260,51 @@ function DeviceStrength(props: { device: Device; units: UnitSystem; onChange: (d
         </div>
       )}
       {d.type === 'supply_vent' && <p className="muted small">Set the supply air temperature under More settings.</p>}
+      {d.type === 'sun' && (
+        <div className="aim">
+          <div className="strength-head">
+            <span className="group-label">Sun height</span>
+            <b>{Math.round(d.elevationDeg)}°</b>
+          </div>
+          <div className="chips">
+            {(
+              [
+                ['Low (morning)', 15],
+                ['Mid', 35],
+                ['High (midday)', 60],
+              ] as const
+            ).map(([label, v]) => (
+              <button key={label} className={d.elevationDeg === v ? 'on' : ''} onClick={() => props.onChange({ ...d, elevationDeg: v })}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <input type="range" min={5} max={85} step={1} value={d.elevationDeg} onChange={(e) => props.onChange({ ...d, elevationDeg: Number(e.target.value) })} />
+          <p className="muted small">Drag the arrow in the top view to aim it. Low sun reaches deep into the room; high sun lands near the window.</p>
+          <SunReach sunId={d.id} scene={props.scene} units={units} />
+        </div>
+      )}
     </div>
+  );
+}
+
+function SunReach(props: { sunId: string; scene: SceneV1; units: UnitSystem }) {
+  const patches = sunPatches(props.scene).filter((p) => p.sunId === props.sunId);
+  if (patches.length === 0) return <p className="warn-text small">Not shining through any window. Aim it at a window, or add a window on this side.</p>;
+  const outline = props.scene.rooms[0].outline;
+  const entering = patches.reduce((s, p) => s + p.enteringW, 0);
+  const onFloor = patches.reduce((s, p) => s + p.enteringW * floorFraction(p, outline), 0);
+  const floorPct = entering > 0 ? Math.round((100 * onFloor) / entering) : 0;
+  return (
+    <>
+      <p className="small">
+        Shining in through {patches.map((p) => p.windowId).join(', ')}: {fmtPower(entering, props.units)} of sunlight.
+      </p>
+      {floorPct < 95 && (
+        <p className="warn-text small">
+          Only {floorPct}% lands on the floor; the rest hits a wall, which doesn't heat the room until phase 3. Raise the sun or aim it more squarely at the window.
+        </p>
+      )}
+    </>
   );
 }

@@ -26,7 +26,7 @@ describe('click-to-place tools', () => {
       ceiling_fan: [1.8, 1.8],
       tower_fan: [0.5, 3.2],
       box_fan: [3.2, 0.6],
-      sun: [1.8, 0.9],
+      sun: [1.8, -0.8], // outside, south of the room
       person: [2.0, 2.4],
       heater: [0.5, 0.5],
       computer: [3.2, 3.2],
@@ -91,9 +91,10 @@ describe('free-form spaces', () => {
   });
 });
 
-describe('sunshine', () => {
+describe('sun patch (hand-placed floor heat)', () => {
   it('a sun patch puts wm2 x its floor area into the lowest air layer', () => {
-    const { scene } = place(bedroom(), 'sun', 1.8, 1.8);
+    const scene = bedroom();
+    scene.devices.push({ id: 'patch', type: 'sun_patch', pos: [1.8, 1.8, 0], size: [1.0, 1.2], wm2: 300, enabled: true });
     const { voxels } = voxelize(scene);
     const sun = voxels.heatSources[0];
     expect(sun.cells.length).toBe(10 * 12); // 1.0 x 1.2 m

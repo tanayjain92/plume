@@ -21,6 +21,7 @@ import {
   windowAcRect,
   type EdgeFrame,
 } from './geometry';
+import { sunPatches } from './solar';
 import type { Opening, Room, SceneV1, Vec2, Vec3 } from './types';
 
 export interface VoxelizeResult {
@@ -36,6 +37,14 @@ function cellsFor(length: number, h: number): number {
   // Exactly the cells whose centers fall inside [0, length]: rounding up would leave a dead row
   // of solid cells along the far wall (a 10 ft = 30.48-cell room would get 31 columns, 30 of them air).
   return Math.max(1, Math.round(length / h));
+}
+
+/**
+ * Half-open span test for cell centers: [lo, hi). When an opening's edges land
+ * exactly on cell centers, this still gives width / h cells (not one extra).
+ */
+function inSpan(v: number, lo: number, hi: number): boolean {
+  return v >= lo - 1e-6 && v < hi - 1e-6;
 }
 
 /** Wind pressure coefficient on a wall: windward ≈ +0.7, leeward ≈ −0.4, sides in between. */
@@ -223,7 +232,7 @@ export function voxelize(scene: SceneV1): VoxelizeResult {
     const f = edgeFrame(room, op.edge);
     return g.cellsWhere((p) => {
       const { s, d } = edgeCoords(f, p);
-      return d > 0 && d < h && s >= s0 && s <= s1 && p[2] >= z0 && p[2] <= z1;
+      return d > 0 && d < h && inSpan(s, s0, s1) && inSpan(p[2], z0, z1);
     });
   };
   // Fluid cells just inside an edge, within a span and height.
@@ -232,7 +241,7 @@ export function voxelize(scene: SceneV1): VoxelizeResult {
     return g.cellsWhere((p, c) => {
       if (cellType[c] !== CellType.Fluid) return false;
       const { s, d } = edgeCoords(f, p);
-      return d < 0 && d > -h && s >= s0 && s <= s1 && p[2] >= z0 && p[2] <= z1;
+      return d < 0 && d > -h && inSpan(s, s0, s1) && inSpan(p[2], z0, z1);
     });
   };
 
@@ -310,6 +319,40 @@ export function voxelize(scene: SceneV1): VoxelizeResult {
           cells = [c];
         }
         heatSources.push({ id: dev.id, cells: Int32Array.from(cells), watts: dev.watts, enabled: dev.enabled });
+        break;
+      }
+
+      case 'sun': {
+        // Sunlight through each window that faces the sun, landing on the floor.
+        const patches = sunPatches(scene).filter((p) => p.sunId === dev.id);
+        let landed = 0;
+        for (const patch of patches) {
+          const cells: number[] = [];
+          for (let j = 1; j < ny - 1; j++)
+            for (let i = 1; i < nx - 1; i++) {
+              const x = origin[0] + (i + 0.5) * h;
+              const y = origin[1] + (j + 0.5) * h;
+              if (!pointInPolygon(x, y, patch.quad)) continue;
+              for (let k = 1; k < nz - 1; k++) {
+                const c = g.idx(i, j, k);
+                if (cellType[c] === CellType.Fluid) {
+                  cells.push(c);
+                  break;
+                }
+                if (cellType[c] !== CellType.Solid) break;
+              }
+            }
+          if (cells.length === 0) continue;
+          landed++;
+          heatSources.push({
+            id: `${dev.id} via ${patch.windowId}`,
+            cells: Int32Array.from(cells),
+            watts: patch.floorWm2 * cells.length * h * h,
+            enabled: dev.enabled,
+          });
+        }
+        if (dev.enabled && landed === 0)
+          warnings.push(`the sun isn't shining through any window onto the floor (aim it at a window, or add one on that side)`);
         break;
       }
 
