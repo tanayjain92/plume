@@ -144,8 +144,22 @@ export interface TowerFanDevice extends DeviceBase {
   periodSec: number;
 }
 
+/**
+ * Sunlit patch of floor: solar gain absorbed by the floor and passed to the
+ * air above it. pos = center of the patch on the floor; size = [x, y] extent.
+ * Phase 3 will derive patches from windows and sun angle.
+ */
+export interface SunPatchDevice extends DeviceBase {
+  type: 'sun_patch';
+  pos: Vec3;
+  size: Vec2;
+  /** Absorbed solar flux, W/m² (strong summer sun through glass ≈ 300–500). */
+  wm2: number;
+}
+
 export type Device =
   | HeatSourceDevice
+  | SunPatchDevice
   | WindowAcDevice
   | PortableAcDevice
   | MiniSplitDevice

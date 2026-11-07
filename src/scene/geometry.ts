@@ -15,6 +15,78 @@ export const DIMS = {
   boxFanStand: 0.05,
 };
 
+/** Ray-casting point-in-polygon test. */
+export function pointInPolygon(x: number, y: number, poly: Vec2[]): boolean {
+  let inside = false;
+  for (let a = 0, b = poly.length - 1; a < poly.length; b = a++) {
+    const [xa, ya] = poly[a];
+    const [xb, yb] = poly[b];
+    if (ya > y !== yb > y && x < ((xb - xa) * (y - ya)) / (yb - ya) + xa) inside = !inside;
+  }
+  return inside;
+}
+
+export function polygonArea(poly: Vec2[]): number {
+  return Math.abs(signedArea(poly));
+}
+
+/** Area-weighted centroid of a simple polygon. */
+export function polygonCentroid(poly: Vec2[]): Vec2 {
+  const a = signedArea(poly);
+  if (Math.abs(a) < 1e-12) {
+    const n = poly.length || 1;
+    return [poly.reduce((s, p) => s + p[0], 0) / n, poly.reduce((s, p) => s + p[1], 0) / n];
+  }
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const [x0, y0] = poly[i];
+    const [x1, y1] = poly[(i + 1) % poly.length];
+    const cr = x0 * y1 - x1 * y0;
+    cx += (x0 + x1) * cr;
+    cy += (y0 + y1) * cr;
+  }
+  return [cx / (6 * a), cy / (6 * a)];
+}
+
+/** True if segments ab and cd cross (touching at shared endpoints does not count). */
+export function segmentsCross(a: Vec2, b: Vec2, c: Vec2, d: Vec2): boolean {
+  const o = (p: Vec2, q: Vec2, r: Vec2) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const d1 = o(c, d, a);
+  const d2 = o(c, d, b);
+  const d3 = o(a, b, c);
+  const d4 = o(a, b, d);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+}
+
+/** A closed outline with at least 3 corners, non-zero area, and no edges crossing each other. */
+export function isSimplePolygon(poly: Vec2[]): boolean {
+  const n = poly.length;
+  if (n < 3 || polygonArea(poly) < 1e-6) return false;
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++) {
+      if (j === i + 1 || (i === 0 && j === n - 1)) continue; // adjacent edges share a corner
+      if (segmentsCross(poly[i], poly[(i + 1) % n], poly[j], poly[(j + 1) % n])) return false;
+    }
+  return true;
+}
+
+/** Nearest wall of a room to a plan point: edge index, distance along it (clamped), and distance from it. */
+export function nearestEdge(room: Room, x: number, y: number): { edge: number; along: number; dist: number; frame: EdgeFrame } {
+  let best = { edge: 0, along: 0, dist: Infinity, frame: edgeFrame(room, 0) };
+  for (let e = 0; e < room.outline.length; e++) {
+    const f = edgeFrame(room, e);
+    const rx = x - f.p0[0];
+    const ry = y - f.p0[1];
+    const along = Math.max(0, Math.min(f.length, rx * f.t[0] + ry * f.t[1]));
+    const px = f.p0[0] + f.t[0] * along;
+    const py = f.p0[1] + f.t[1] * along;
+    const dist = Math.hypot(x - px, y - py);
+    if (dist < best.dist) best = { edge: e, along, dist, frame: f };
+  }
+  return best;
+}
+
 /** Horizontal unit vector for a heading in degrees clockwise from +y. */
 export function headingDir(deg: number): Vec3 {
   const r = (deg * Math.PI) / 180;
@@ -132,6 +204,15 @@ export function sceneShapes(scene: SceneV1): DeviceShape[] {
           kind: d.type,
           lo: [d.pos[0] - d.size[0] / 2, d.pos[1] - d.size[1] / 2, d.pos[2]],
           hi: [d.pos[0] + d.size[0] / 2, d.pos[1] + d.size[1] / 2, d.pos[2] + d.size[2]],
+          enabled: d.enabled,
+        });
+        break;
+      case 'sun_patch':
+        shapes.push({
+          id: d.id,
+          kind: d.type,
+          lo: [d.pos[0] - d.size[0] / 2, d.pos[1] - d.size[1] / 2, 0],
+          hi: [d.pos[0] + d.size[0] / 2, d.pos[1] + d.size[1] / 2, 0.05],
           enabled: d.enabled,
         });
         break;

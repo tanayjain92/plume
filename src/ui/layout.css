@@ -1,0 +1,360 @@
+/* ---------- start screen ---------- */
+.setup {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 16px;
+}
+.setup-card {
+  width: min(960px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.setup-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.setup-head h1 {
+  margin: 0;
+  font-size: 22px;
+}
+.setup-head p {
+  margin: 2px 0 0;
+  color: var(--muted);
+}
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  padding: 8px 14px;
+  color: var(--muted);
+}
+.tabs button.on {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.size-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.size-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 10px;
+  background: var(--panel-2);
+}
+.size-card.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.size-shape {
+  display: block;
+  border: 2px solid var(--accent);
+  border-radius: 2px;
+  background: rgba(90, 169, 255, 0.12);
+  margin: 6px 0;
+}
+.size-label {
+  font-weight: 600;
+}
+.size-dims {
+  color: var(--muted);
+  font-size: 12px;
+}
+.size-tag {
+  font-size: 11px;
+  color: var(--accent-2);
+}
+.custom-size {
+  max-width: 360px;
+}
+.setup-row {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field-group > .numfield {
+  width: 130px;
+}
+.group-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--muted);
+}
+.chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.chips button {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+}
+.chips button.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(90, 169, 255, 0.12);
+}
+.chips .numfield {
+  width: 110px;
+}
+.setup-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+.setup-alt {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.setup-go {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+button.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.draw {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.draw-canvas canvas {
+  display: block;
+  border-radius: 8px;
+  cursor: crosshair;
+  touch-action: none;
+}
+.draw-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+.warn-text {
+  color: var(--accent-2);
+}
+.toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 16px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+}
+
+/* ---------- editor layout ---------- */
+.app2 {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  grid-template-rows: auto 1fr;
+  min-height: 100vh;
+}
+.app2 .main {
+  grid-column: 1;
+}
+.controls {
+  grid-column: 2;
+  grid-row: 2;
+  border-left: 1px solid var(--line);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+.tool-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tool-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.tool {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  font-size: 13px;
+  padding: 8px 10px;
+}
+.tool.on {
+  border-color: var(--accent-2);
+  background: rgba(255, 210, 80, 0.12);
+}
+.tool-icon {
+  width: 18px;
+  text-align: center;
+  color: var(--accent);
+  font-size: 15px;
+}
+.tool-hint {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 210, 80, 0.1);
+  border: 1px solid rgba(255, 210, 80, 0.35);
+  font-size: 13px;
+}
+.panel.selected {
+  border-color: rgba(255, 210, 80, 0.5);
+}
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.strength {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.strength-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.strength-head b {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.aim {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.compass {
+  display: inline-block;
+  width: 28px;
+  height: 28px;
+  line-height: 28px;
+  text-align: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--accent);
+  font-weight: 700;
+}
+details.more summary,
+details.color-settings summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+}
+details.more[open] summary {
+  margin-bottom: 8px;
+}
+button.danger {
+  color: var(--bad);
+}
+.viewbar {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 10px 14px;
+}
+.viewbar select {
+  width: auto;
+}
+.inline-slider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.inline-slider input {
+  width: 160px;
+}
+.inline-slider b {
+  color: var(--text);
+  min-width: 52px;
+  font-variant-numeric: tabular-nums;
+}
+details.color-settings {
+  position: relative;
+}
+.popover {
+  position: absolute;
+  right: 0;
+  top: 28px;
+  z-index: 5;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 220px;
+}
+.single-view .slice {
+  max-width: 1100px;
+}
+.single-view.placing canvas {
+  cursor: copy;
+}
+.notes-panel .notes li.log {
+  color: #ff9c9c;
+}
+
+@media (max-width: 900px) {
+  .app2 {
+    grid-template-columns: 1fr;
+  }
+  .controls {
+    grid-column: 1;
+    grid-row: auto;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+}

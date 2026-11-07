@@ -34,6 +34,8 @@ export interface Glyph {
   /** Turned off, or not crossing this slice. */
   faded: boolean;
   dashed?: boolean;
+  /** Placement preview under the cursor. */
+  ghost?: boolean;
 }
 
 interface Props {
@@ -54,6 +56,7 @@ interface Props {
   onPointerDown?: (a: number, b: number) => void;
   onPointerDrag?: (a: number, b: number) => void;
   onPointerUp?: () => void;
+  onHover?: (pt: { a: number; b: number } | null) => void;
 }
 
 const ARROW_REF_SPEED = 0.5; // m/s that draws a full-length arrow
@@ -91,10 +94,20 @@ export function SliceView(props: Props) {
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setCellPx(Math.max(4, Math.min(24, Math.floor(el.clientWidth / geom.W)))));
+    // Fit both the width of the panel and the height left in the window (room for the legend below).
+    const fit = () => {
+      const top = el.getBoundingClientRect().top + window.scrollY;
+      const availH = Math.max(240, window.innerHeight - top - 90);
+      setCellPx(Math.max(4, Math.min(28, Math.floor(el.clientWidth / geom.W), Math.floor(availH / geom.H))));
+    };
+    const ro = new ResizeObserver(fit);
     ro.observe(el);
-    return () => ro.disconnect();
-  }, [geom.W]);
+    window.addEventListener('resize', fit);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', fit);
+    };
+  }, [geom.W, geom.H]);
 
   // Rebuild the heatmap image and slice arrays when data or color settings change.
   useEffect(() => {
@@ -351,6 +364,8 @@ export function SliceView(props: Props) {
           const tail = Math.max(0.15, Math.hypot(va, vb) * ih * STREAK_SECONDS);
           const a = pos[aAxis][i];
           const b = pos[bAxis][i];
+          // The slab is a few cells thick; don't draw particles over cells that are wall in this plane.
+          if (sd.cellKind[Math.floor(a) + W * Math.floor(b)] !== 0) continue;
           ctx.moveTo(X(a), Y(b));
           ctx.lineTo(X(a - (va / sp) * tail), Y(b - (vb / sp) * tail));
         }
@@ -366,11 +381,11 @@ export function SliceView(props: Props) {
         const y1 = Y(Math.min(gl.b0, gl.b1));
         const w = Math.max(3, x1 - x0);
         const hgt = Math.max(3, y1 - y0);
-        ctx.globalAlpha = gl.faded ? 0.35 : 1;
+        ctx.globalAlpha = gl.ghost ? 0.75 : gl.faded ? 0.35 : 1;
         ctx.fillStyle = gl.color + '33';
         ctx.fillRect(x0, y0, w, hgt);
-        ctx.setLineDash(gl.dashed ? [4, 3] : []);
-        ctx.strokeStyle = gl.selected ? '#ffd250' : gl.color;
+        ctx.setLineDash(gl.dashed || gl.ghost ? [4, 3] : []);
+        ctx.strokeStyle = gl.selected || gl.ghost ? '#ffd250' : gl.color;
         ctx.lineWidth = gl.selected ? 2.5 : 1.5;
         ctx.strokeRect(x0, y0, w, hgt);
         ctx.setLineDash([]);
@@ -466,10 +481,14 @@ export function SliceView(props: Props) {
           onPointerMove={(e) => {
             const pt = toCells(e);
             setHover(pt);
+            props.onHover?.(pt);
             if (props.onPointerDrag && e.buttons & 1) props.onPointerDrag(pt.a, pt.b);
           }}
           onPointerUp={() => props.onPointerUp?.()}
-          onPointerLeave={() => setHover(null)}
+          onPointerLeave={() => {
+            setHover(null);
+            props.onHover?.(null);
+          }}
         />
       </div>
       <div className="readout">{readout}</div>

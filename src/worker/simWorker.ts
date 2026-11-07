@@ -46,6 +46,8 @@ function applyPending(): void {
       restarted: !keep,
     });
     postFrame(0, 0);
+    // "run" may have arrived before the first scene; start the loop now that there is a solver.
+    if (running && timer === null) timer = setTimeout(tick, 0);
   } catch (err) {
     post({ type: 'error', message: err instanceof Error ? err.message : String(err) });
   }
@@ -111,8 +113,8 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
     switch (msg.type) {
       case 'scene':
         pending = { scene: msg.scene, keepState: msg.keepState };
-        // While running, the next tick applies it; otherwise apply soon (coalescing bursts).
-        if (!running && applyTimer === null) applyTimer = setTimeout(applyPending, 0);
+        // Apply soon; bursts of edits (dragging) coalesce because only the latest pending scene is kept.
+        if (applyTimer === null) applyTimer = setTimeout(applyPending, 0);
         break;
       case 'reset':
         if (scene) {

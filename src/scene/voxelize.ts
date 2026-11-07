@@ -17,6 +17,7 @@ import {
   headingBox,
   headingDir,
   normalize,
+  pointInPolygon,
   windowAcRect,
   type EdgeFrame,
 } from './geometry';
@@ -28,20 +29,13 @@ export interface VoxelizeResult {
   warnings: string[];
 }
 
-/** Ray-casting point-in-polygon test. */
-export function pointInPolygon(x: number, y: number, poly: Vec2[]): boolean {
-  let inside = false;
-  for (let a = 0, b = poly.length - 1; a < poly.length; b = a++) {
-    const [xa, ya] = poly[a];
-    const [xb, yb] = poly[b];
-    if (ya > y !== yb > y && x < ((xb - xa) * (y - ya)) / (yb - ya) + xa) inside = !inside;
-  }
-  return inside;
-}
+export { pointInPolygon };
 
 /** Number of cells covering `length` meters, robust to float noise (4 / 0.1 = 40, not 41). */
 function cellsFor(length: number, h: number): number {
-  return Math.max(1, Math.ceil(length / h - 1e-6));
+  // Exactly the cells whose centers fall inside [0, length]: rounding up would leave a dead row
+  // of solid cells along the far wall (a 10 ft = 30.48-cell room would get 31 columns, 30 of them air).
+  return Math.max(1, Math.round(length / h));
 }
 
 /** Wind pressure coefficient on a wall: windward ≈ +0.7, leeward ≈ −0.4, sides in between. */
@@ -316,6 +310,31 @@ export function voxelize(scene: SceneV1): VoxelizeResult {
           cells = [c];
         }
         heatSources.push({ id: dev.id, cells: Int32Array.from(cells), watts: dev.watts, enabled: dev.enabled });
+        break;
+      }
+
+      case 'sun_patch': {
+        // Solar gain absorbed by the sunlit floor, released into the lowest air cell of each column.
+        const cells: number[] = [];
+        for (let j = 1; j < ny - 1; j++)
+          for (let i = 1; i < nx - 1; i++) {
+            const x = origin[0] + (i + 0.5) * h;
+            const y = origin[1] + (j + 0.5) * h;
+            if (Math.abs(x - dev.pos[0]) > dev.size[0] / 2 || Math.abs(y - dev.pos[1]) > dev.size[1] / 2) continue;
+            for (let k = 1; k < nz - 1; k++) {
+              const c = g.idx(i, j, k);
+              if (cellType[c] === CellType.Fluid) {
+                cells.push(c);
+                break;
+              }
+              if (cellType[c] !== CellType.Solid) break;
+            }
+          }
+        if (cells.length === 0) {
+          warnings.push(`sun patch "${dev.id}" is outside the room; ignored`);
+          break;
+        }
+        heatSources.push({ id: dev.id, cells: Int32Array.from(cells), watts: dev.wm2 * cells.length * h * h, enabled: dev.enabled });
         break;
       }
 
