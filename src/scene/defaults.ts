@@ -115,7 +115,7 @@ export const TOOLS: Tool[] = [
   { kind: 'sensor', label: 'Temp sensor', group: 'Measure', icon: '🌡', hint: 'Click where you want a temperature reading. It reads at seated head height; change the height after placing it.' },
 ];
 
-function uniqueId(scene: SceneV1, base: string): string {
+export function uniqueId(scene: SceneV1, base: string): string {
   const taken = new Set([...scene.devices.map((d) => d.id), ...scene.openings.map((o) => o.id)]);
   for (let n = 1; ; n++) if (!taken.has(`${base} ${n}`)) return `${base} ${n}`;
 }
@@ -217,7 +217,7 @@ export function placeTool(scene: SceneV1, kind: ToolKind, x: number, y: number):
       dev = { id: uniqueId(scene, 'Box fan'), type: 'box_fan', pos: pos(0), heading: aim, diameter: 0.5, airflowCfm: 1300, enabled: true };
       break;
     case 'person':
-      dev = { id: uniqueId(scene, 'Person'), type: 'heat_source', pos: pos(0), size: [0.4, 0.3, 1.7], watts: 100, enabled: true };
+      dev = { id: uniqueId(scene, 'Person'), type: 'heat_source', pos: pos(0), size: [0.4, 0.3, 1.7], watts: 100, look: 'person', enabled: true };
       break;
     case 'heater':
       dev = { id: uniqueId(scene, 'Space heater'), type: 'heat_source', pos: pos(0), size: [0.3, 0.2, 0.6], watts: 1500, enabled: true };

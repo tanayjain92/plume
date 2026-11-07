@@ -98,6 +98,8 @@ export interface HeatSourceDevice extends DeviceBase {
   pos: Vec3;
   size: Vec3;
   watts: number;
+  /** How the editor draws it (no effect on the physics). Missing = a plain box. */
+  look?: 'person';
 }
 
 export interface WindowAcDevice extends DeviceBase {

@@ -41,8 +41,12 @@ export interface Glyph {
   /** Draw an arrow from the center to this point instead of the dir arrow (the sun). */
   arrowTo?: [number, number];
   round?: boolean;
-  /** Shaded solid (the user picked a color for it). */
+  /** Shaded solid (the user picked a color for it): opaque, so particles don't show through. */
   filled?: boolean;
+  /** Draw it as what it is instead of a box (a person, or a kind of fan). */
+  look?: Look;
+  /** In-plane direction it faces (slice coords, b up), for drawing fans. */
+  facing?: [number, number];
   /** Always-visible value tag next to the glyph (sensor readings). */
   badge?: string;
 }
@@ -437,14 +441,15 @@ export function SliceView(props: Props) {
         const hgt = Math.max(3, y1 - y0);
         ctx.globalAlpha = gl.ghost ? 0.75 : gl.faded ? 0.35 : 1;
         ctx.setLineDash(gl.dashed || gl.ghost ? [4, 3] : []);
-        ctx.strokeStyle = gl.selected || gl.ghost ? '#ffd250' : gl.color;
+        // colored objects get a dark outline so their details (a head, fan blades) still show
+        ctx.strokeStyle = gl.selected || gl.ghost ? '#ffd250' : gl.filled ? 'rgba(0, 0, 0, 0.55)' : gl.color;
         ctx.lineWidth = gl.selected ? 2.5 : 1.5;
         if (gl.round) {
           const r = Math.max(w, hgt) / 2;
-          ctx.fillStyle = gl.color + (gl.filled ? 'e0' : '99');
+          ctx.fillStyle = gl.color + (gl.filled ? '' : '99');
           ctx.beginPath();
           ctx.arc(x0 + w / 2, y0 + hgt / 2, r, 0, Math.PI * 2);
-          ctx.fill();
+          fillSolid(ctx, gl.filled);
           ctx.stroke();
           // rays (the sun only; sensors are plain dots)
           ctx.beginPath();
@@ -455,9 +460,12 @@ export function SliceView(props: Props) {
           }
           ctx.stroke();
         } else {
-          ctx.fillStyle = gl.color + (gl.filled ? 'c0' : '33');
-          ctx.fillRect(x0, y0, w, hgt);
-          ctx.strokeRect(x0, y0, w, hgt);
+          ctx.fillStyle = gl.color + (gl.filled ? '' : '33');
+          ctx.beginPath();
+          if (gl.look) lookPath(ctx, gl.look, x0, y0, w, hgt, p.axis === 'z', gl.facing);
+          else ctx.rect(x0, y0, w, hgt);
+          fillSolid(ctx, gl.filled);
+          ctx.stroke();
         }
         ctx.setLineDash([]);
         if (gl.arrowTo) {
@@ -624,6 +632,136 @@ export function SliceView(props: Props) {
       )}
     </section>
   );
+}
+
+/** Fill the current path; a colored (filled) glyph is fully opaque even when faded, so nothing shows through it. */
+function fillSolid(ctx: CanvasRenderingContext2D, solid?: boolean): void {
+  const a = ctx.globalAlpha;
+  if (solid) ctx.globalAlpha = 1;
+  ctx.fill();
+  ctx.globalAlpha = a;
+}
+
+export type Look = 'person' | 'box_fan' | 'ceiling_fan' | 'tower_fan';
+
+/** Outline of a person or fan inside the glyph box (x, y, w, h), as one path to fill and stroke. */
+function lookPath(ctx: CanvasRenderingContext2D, look: Look, x: number, y: number, w: number, h: number, fromAbove: boolean, facing?: [number, number]): void {
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  switch (look) {
+    case 'person':
+      return personPath(ctx, x, y, w, h, fromAbove);
+    case 'ceiling_fan': {
+      const r = Math.min(w, fromAbove ? h : w) / 2;
+      if (fromAbove) {
+        bladesPath(ctx, cx, cy, r, 4, Math.PI / 4);
+        ctx.moveTo(cx + r * 0.16, cy);
+        ctx.arc(cx, cy, r * 0.16, 0, Math.PI * 2);
+      } else {
+        // blades seen edge-on, hanging from a short rod
+        const t = Math.max(3, h);
+        ctx.ellipse(cx, cy, w / 2, t / 2, 0, 0, Math.PI * 2);
+        ctx.rect(cx - 2, cy - t / 2 - 8, 4, 8);
+      }
+      return;
+    }
+    case 'box_fan': {
+      const L = Math.min(w, h);
+      const f = facing ?? [0, 1];
+      const fl = Math.hypot(f[0], f[1]);
+      if (fromAbove || fl > 0.5) {
+        // edge-on: a slim frame across the way it blows
+        const ux = f[0] / (fl || 1);
+        const uy = -f[1] / (fl || 1); // screen y is down
+        const px = -uy;
+        const py = ux;
+        const T = L * 0.22;
+        const c = [
+          [cx + px * (L / 2) + ux * (T / 2), cy + py * (L / 2) + uy * (T / 2)],
+          [cx - px * (L / 2) + ux * (T / 2), cy - py * (L / 2) + uy * (T / 2)],
+          [cx - px * (L / 2) - ux * (T / 2), cy - py * (L / 2) - uy * (T / 2)],
+          [cx + px * (L / 2) - ux * (T / 2), cy + py * (L / 2) - uy * (T / 2)],
+        ];
+        ctx.moveTo(c[0][0], c[0][1]);
+        for (let k = 1; k < 4; k++) ctx.lineTo(c[k][0], c[k][1]);
+        ctx.closePath();
+        // grille bars
+        for (let k = 1; k < 4; k++) {
+          const s = -L / 2 + (k * L) / 4;
+          ctx.moveTo(cx + px * s + ux * (T / 2), cy + py * s + uy * (T / 2));
+          ctx.lineTo(cx + px * s - ux * (T / 2), cy + py * s - uy * (T / 2));
+        }
+      } else {
+        // face-on: square frame, round guard, three blades
+        ctx.roundRect(cx - L / 2, cy - L / 2, L, L, L * 0.08);
+        ctx.moveTo(cx + L * 0.42, cy);
+        ctx.arc(cx, cy, L * 0.42, 0, Math.PI * 2);
+        bladesPath(ctx, cx, cy, L * 0.4, 3, -Math.PI / 2);
+      }
+      return;
+    }
+    case 'tower_fan': {
+      const rad = Math.min(w, h) * 0.4;
+      ctx.roundRect(x, y, w, h, rad);
+      if (fromAbove) {
+        // grille on the front face
+        const f = facing ?? [0, 1];
+        const fl = Math.hypot(f[0], f[1]) || 1;
+        const ux = f[0] / fl;
+        const uy = -f[1] / fl;
+        ctx.moveTo(cx - uy * w * 0.3 + ux * w * 0.3, cy + ux * h * 0.3 + uy * h * 0.3);
+        ctx.lineTo(cx + uy * w * 0.3 + ux * w * 0.3, cy - ux * h * 0.3 + uy * h * 0.3);
+      } else {
+        // horizontal slots up the column
+        for (let sy = y + h * 0.15; sy < y + h * 0.85; sy += Math.max(4, h / 14)) {
+          ctx.moveTo(x + w * 0.25, sy);
+          ctx.lineTo(x + w * 0.75, sy);
+        }
+      }
+      return;
+    }
+  }
+}
+
+/** n fan blades around (cx, cy), radius r, starting at angle a0. */
+function bladesPath(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, n: number, a0: number): void {
+  for (let k = 0; k < n; k++) {
+    const a = a0 + (k * 2 * Math.PI) / n;
+    const bx = cx + Math.cos(a) * r * 0.55;
+    const by = cy + Math.sin(a) * r * 0.55;
+    ctx.moveTo(bx + Math.cos(a) * r * 0.45, by + Math.sin(a) * r * 0.45);
+    ctx.ellipse(bx, by, r * 0.45, r * 0.15, a, 0, Math.PI * 2);
+  }
+}
+
+/**
+ * A person inside the box (x, y, w, h), as a path. From above: shoulders and a
+ * head. From the side (or front): head, body, arms and legs.
+ */
+function personPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, fromAbove: boolean): void {
+  const cx = x + w / 2;
+  if (fromAbove) {
+    const cy = y + h / 2;
+    ctx.ellipse(cx, cy, w / 2, h * 0.32, 0, 0, Math.PI * 2);
+    ctx.moveTo(cx + Math.min(w, h) * 0.3, cy);
+    ctx.arc(cx, cy, Math.min(w, h) * 0.3, 0, Math.PI * 2);
+    return;
+  }
+  const headR = Math.min(w * 0.32, h * 0.075);
+  const neck = y + 2 * headR + h * 0.01;
+  const hip = y + h * 0.53;
+  const bodyW = w * 0.62;
+  const legW = w * 0.24;
+  ctx.moveTo(cx + headR, y + headR);
+  ctx.arc(cx, y + headR, headR, 0, Math.PI * 2);
+  // body
+  ctx.roundRect(cx - bodyW / 2, neck, bodyW, hip - neck, Math.min(bodyW / 3, 6));
+  // arms
+  ctx.roundRect(x, neck + 2, w * 0.17, (hip - neck) * 0.95, w * 0.08);
+  ctx.roundRect(x + w - w * 0.17, neck + 2, w * 0.17, (hip - neck) * 0.95, w * 0.08);
+  // legs
+  ctx.roundRect(cx - bodyW / 2, hip - 1, legW, y + h - hip + 1, legW / 3);
+  ctx.roundRect(cx + bodyW / 2 - legW, hip - 1, legW, y + h - hip + 1, legW / 3);
 }
 
 function drawArrow(ctx: CanvasRenderingContext2D, x0: number, y0: number, ux: number, uy: number, len: number, color: string, width: number): void {

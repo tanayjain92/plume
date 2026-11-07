@@ -1,5 +1,5 @@
-import { strengthFor } from './defaults';
-import { dirHeading, edgeFrame, headingDir, sceneShapes } from './geometry';
+import { strengthFor, uniqueId } from './defaults';
+import { dirHeading, edgeFrame, headingDir, pointInPolygon, sceneShapes } from './geometry';
 import { sunDirection, sunPatches } from './solar';
 import type { Device, Opening, SceneV1 } from './types';
 
@@ -250,4 +250,100 @@ export function removeItem(scene: SceneV1, id: string): SceneV1 {
     openings: scene.openings.filter((o) => o.id !== id),
     devices: scene.devices.filter((d) => d.id !== id && !(d.type === 'window_ac' && d.mountedIn === id)),
   };
+}
+
+/**
+ * Move a window or device by (dx, dy) m in the plan, snapped to 5 cm.
+ * Windows (and a window AC with its window) slide along their wall; the sun
+ * stays outside the room and everything else inside. Returns null if the
+ * move isn't allowed.
+ */
+export function moveItem(scene: SceneV1, id: string, dx: number, dy: number): SceneV1 | null {
+  const room = scene.rooms[0];
+  const slide = (opId: string): SceneV1 | null => {
+    const op = findWindow(scene, opId);
+    if (!op) return null;
+    const f = edgeFrame(room, op.edge);
+    const offset = snap(Math.max(0, Math.min(f.length - op.width, op.offset + dx * f.t[0] + dy * f.t[1])));
+    return { ...scene, openings: scene.openings.map((o) => (o.id === opId ? { ...o, offset } : o)) };
+  };
+  const dev = scene.devices.find((d) => d.id === id);
+  if (!dev) return slide(id);
+  if (dev.type === 'window_ac') return slide(dev.mountedIn);
+  const x = snap(dev.pos[0] + dx);
+  const y = snap(dev.pos[1] + dy);
+  const inside = pointInPolygon(x, y, room.outline);
+  if (dev.type === 'sun' ? inside : !inside) return null;
+  return { ...scene, devices: scene.devices.map((d) => (d.id === id ? ({ ...d, pos: [x, y, dev.pos[2]] } as Device) : d)) };
+}
+
+/** Arrow-key nudge step, m (Shift = big step). */
+export const NUDGE = { step: 0.1, big: 0.5 };
+
+/** What Ctrl+C holds: a device, a window, or a window AC together with its window. */
+export interface Clip {
+  device?: Device;
+  opening?: Opening;
+}
+
+export function copyItem(scene: SceneV1, id: string): Clip | null {
+  const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+  const dev = scene.devices.find((d) => d.id === id);
+  if (dev) {
+    if (dev.type === 'window_ac') {
+      const op = findWindow(scene, dev.mountedIn);
+      return op ? { device: clone(dev), opening: clone(op) } : null;
+    }
+    return { device: clone(dev) };
+  }
+  const op = findWindow(scene, id);
+  return op ? { opening: clone(op) } : null;
+}
+
+/** Name for a copy: same kind, next free number ("Box fan 1" -> "Box fan 2"). */
+const copyId = (scene: SceneV1, id: string) => uniqueId(scene, id.replace(/\s+\d+$/, '') || id);
+
+/**
+ * Paste a copy next to the original: a little down and to the right in the
+ * plan, or the nearest free spot; windows go beside the original on the same
+ * wall. Returns the new scene and the id to select.
+ */
+export function pasteItem(scene: SceneV1, clip: Clip): { scene: SceneV1; id: string } | { error: string } {
+  const room = scene.rooms[0];
+  let next = scene;
+  let opening: Opening | undefined;
+  if (clip.opening) {
+    const op = clip.opening;
+    const f = edgeFrame(room, op.edge);
+    const others = next.openings.filter((o) => o.edge === op.edge && o.room === op.room);
+    const fits = (off: number) => off >= 0 && off + op.width <= f.length + 1e-9 && others.every((o) => off + op.width + 0.05 <= o.offset || off >= o.offset + o.width + 0.05);
+    const tries = [op.offset + op.width + 0.1, op.offset - op.width - 0.1];
+    for (let s = 0; s + op.width <= f.length; s += 0.05) tries.push(s);
+    const offset = tries.map(snap).find(fits);
+    if (offset === undefined) return { error: 'No room on that wall for another window.' };
+    opening = { ...op, id: copyId(next, op.id), offset };
+    next = { ...next, openings: [...next.openings, opening] };
+    if (!clip.device) return { scene: next, id: opening.id };
+  }
+  const d = clip.device;
+  if (!d) return { error: 'Nothing to paste.' };
+  if (d.type === 'window_ac') {
+    const ac = { ...d, id: copyId(next, d.id), mountedIn: opening!.id };
+    return { scene: { ...next, devices: [...next.devices, ac] }, id: ac.id };
+  }
+  if (d.type === 'sun') return { error: 'There is only one sun.' };
+  if (!('pos' in d)) return { error: "That can't be copied." };
+  // Wall-mounted heads slide along their wall; everything else steps diagonally.
+  const along = d.type === 'mini_split' ? (() => { const h = headingDir(d.heading); return [h[1], -h[0]]; })() : null;
+  const steps = along
+    ? [1, -1, 2, -2].map((k) => [along[0] * 0.9 * k, along[1] * 0.9 * k])
+    : [[0.3, -0.3], [-0.3, -0.3], [0.3, 0.3], [-0.3, 0.3], [0.6, 0], [-0.6, 0], [0, 0.6], [0, -0.6]];
+  for (const [dx, dy] of steps) {
+    const x = snap(d.pos[0] + dx);
+    const y = snap(d.pos[1] + dy);
+    if (!pointInPolygon(x, y, room.outline)) continue;
+    const copy = { ...d, id: copyId(next, d.id), pos: [x, y, d.pos[2]] } as Device;
+    return { scene: { ...next, devices: [...next.devices, copy] }, id: copy.id };
+  }
+  return { error: 'No room next to it for a copy.' };
 }

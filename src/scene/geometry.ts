@@ -186,6 +186,8 @@ export interface DeviceShape {
   dir?: Vec3;
   /** Flow out of the room (returns), shown as an inward arrow. */
   intake?: boolean;
+  /** Drawn as a person instead of a box. */
+  person?: boolean;
   enabled: boolean;
   open?: boolean;
 }
@@ -210,6 +212,8 @@ export function sceneShapes(scene: SceneV1): DeviceShape[] {
           lo: [d.pos[0] - d.size[0] / 2, d.pos[1] - d.size[1] / 2, d.pos[2]],
           hi: [d.pos[0] + d.size[0] / 2, d.pos[1] + d.size[1] / 2, d.pos[2] + d.size[2]],
           enabled: d.enabled,
+          // older files: a heat source named "person" is one
+          person: d.look === 'person' || /^person/i.test(d.id),
         });
         break;
       case 'sensor': {

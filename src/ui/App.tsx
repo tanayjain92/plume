@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { hasHeading, placeTool, TOOLS, type ToolKind } from '../scene/defaults';
-import { aimArrow, dragHandle, handlesFor, removeItem, resizeWindow, SUN_ARROW, sunlightId, toggleWindow } from '../scene/editing';
+import { aimArrow, copyItem, dragHandle, handlesFor, moveItem, NUDGE, pasteItem, removeItem, type Clip, resizeWindow, SUN_ARROW, sunlightId, toggleWindow } from '../scene/editing';
 import { sunPatches } from '../scene/solar';
 import { autoRoomTemp } from '../scene/weather';
 import { EnergyPanel } from './EnergyPanel';
 import { EnergyWindow, TempHistory } from './history';
 import { TempChart } from './TempChart';
-import { edgeFrame, pointInPolygon, polygonArea, sceneShapes, type DeviceShape } from '../scene/geometry';
+import { pointInPolygon, polygonArea, sceneShapes, type DeviceShape } from '../scene/geometry';
 import type { Device, SceneV1 } from '../scene/types';
 import type { Frame, FromWorker, GridInfo, ToWorker } from '../worker/protocol';
 import { ControlsPanel, type SensorReading } from './Controls';
@@ -92,6 +92,7 @@ export function App() {
   const [tempHalfRange, setTempHalfRange] = useState(4);
   const [draftThreshold, setDraftThreshold] = useState(0.25);
   const dragRef = useRef<Drag | null>(null);
+  const clipRef = useRef<Clip | null>(null);
   const sensorHistory = useRef(new Map<string, { t: number; T: number }[]>());
   const tempHistory = useRef(new TempHistory());
   const energyWindow = useRef(new EnergyWindow(60));
@@ -268,6 +269,37 @@ export function App() {
         if (tool) setTool(null);
         else setSelected(null);
       }
+      // Ctrl+C / Ctrl+V: copy the selected object, paste a copy beside it (repeat to keep stepping).
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && scene && !showSetup && (e.key.toLowerCase() === 'c' || e.key.toLowerCase() === 'v')) {
+        if (window.getSelection()?.toString()) return; // copying page text
+        if (e.key.toLowerCase() === 'c') {
+          const clip = selected && !selected.startsWith('sunlight:') ? copyItem(scene, selected) : null;
+          if (clip) {
+            clipRef.current = clip;
+            setNotice(`Copied ${selected}. Ctrl+V pastes a copy.`);
+          }
+          return;
+        }
+        if (!clipRef.current) return;
+        e.preventDefault();
+        const r = pasteItem(scene, clipRef.current);
+        if ('error' in r) return setNotice(r.error);
+        editScene(r.scene);
+        setSelected(r.id);
+        setTool(null);
+        clipRef.current = copyItem(r.scene, r.id); // the next paste steps on from this one
+        return;
+      }
+      // Arrow keys nudge the selected object in the plan (Shift = bigger steps).
+      const arrow = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }[e.key];
+      if (arrow && selected && !selected.startsWith('sunlight:') && scene && !showSetup && view === 'top') {
+        e.preventDefault();
+        const step = e.shiftKey ? NUDGE.big : NUDGE.step;
+        const moved = moveItem(scene, selected, arrow[0] * step, arrow[1] * step);
+        if (moved) editScene(moved);
+        else setNotice(scene.devices.find((d) => d.id === selected)?.type === 'sun' ? 'The sun stays outside the room.' : "Can't move it further that way: it would leave the room.");
+        return;
+      }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selected && !selected.startsWith('sunlight:') && scene && !showSetup) {
         editScene(removeItem(scene, selected));
         setSelected(null);
@@ -275,7 +307,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [tool, selected, scene, showSetup, undo]);
+  }, [tool, selected, scene, showSetup, undo, view]);
 
   useEffect(() => {
     if (!notice) return;
@@ -364,6 +396,8 @@ export function App() {
         intake: s.intake,
         color: colorOf(s.id) ?? GLYPH_COLORS[s.kind],
         filled: Boolean(colorOf(s.id)),
+        look: s.person ? 'person' : s.kind === 'box_fan' || s.kind === 'ceiling_fan' || s.kind === 'tower_fan' ? s.kind : undefined,
+        facing: s.dir ? [s.dir[ax[0]], s.dir[ax[1]]] : undefined,
         label: s.id,
         selected: s.id === selected,
         faded: !s.enabled || !crosses,
@@ -457,24 +491,8 @@ export function App() {
       editScene(dragHandle(s0, drag.id, drag.handle, x, y));
       return;
     }
-    const dx = (a - drag.a) * grid.h;
-    const dy = (b - drag.b) * grid.h;
-    const r0 = s0.rooms[0];
-    const moveOpening = (id: string) => {
-      const op = s0.openings.find((o) => o.id === id);
-      if (!op) return s0.openings;
-      const f = edgeFrame(r0, op.edge);
-      const offset = Math.max(0, Math.min(f.length - op.width, op.offset + dx * f.t[0] + dy * f.t[1]));
-      return s0.openings.map((o) => (o.id === id ? { ...o, offset: Math.round(offset * 20) / 20 } : o));
-    };
-    const dev = s0.devices.find((d) => d.id === drag.id);
-    if (!dev) return editScene({ ...s0, openings: moveOpening(drag.id) });
-    if (dev.type === 'window_ac') return editScene({ ...s0, openings: moveOpening(dev.mountedIn) });
-    const x = Math.round((dev.pos[0] + dx) * 20) / 20;
-    const y = Math.round((dev.pos[1] + dy) * 20) / 20;
-    const inside = pointInPolygon(x, y, r0.outline);
-    if (dev.type === 'sun' ? inside : !inside) return; // the sun stays outside; everything else inside
-    editScene({ ...s0, devices: s0.devices.map((d) => (d.id === dev.id ? ({ ...d, pos: [x, y, dev.pos[2]] } as typeof d) : d)) });
+    const moved = moveItem(s0, drag.id, (a - drag.a) * grid.h, (b - drag.b) * grid.h);
+    if (moved) editScene(moved);
   };
 
   const onDown = (a: number, b: number) => {
