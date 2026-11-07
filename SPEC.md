@@ -92,6 +92,8 @@ Devices toggle on and off live while the sim runs. The UI shows °F, ft, CFM and
 
 ## Tech stack and architecture
 
+> **Decision 2026-11-07: Plume ships as a Windows desktop app.** The app stays a TypeScript web app inside, so everything below still applies, and it gets wrapped in a desktop shell (Electron or Tauri). The shell choice is deferred until phase 4 at the latest. Mac support and "no install" are dropped as goals. Phase 6 "save and share" means scene files on disk.
+
 Build it as a browser app in TypeScript. No install, works on Windows and Mac, and WebGPU runs in Chrome and Edge for the heavy lifting later.
 
 - **UI:** Vite, React and TypeScript for the editor and panels.

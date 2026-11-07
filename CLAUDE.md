@@ -1,6 +1,6 @@
 # Plume
 
-Browser-based room airflow and heat simulator. The build spec is `SPEC.md`: read it before starting a phase. Repo: https://github.com/tanayjain92/plume (branch `main`).
+Room airflow and heat simulator, targeting a **Windows desktop app** (web app wrapped in Electron or Tauri; shell not chosen yet, decide by phase 4). The build spec is `SPEC.md`: read it before starting a phase. Repo: https://github.com/tanayjain92/plume (branch `main`).
 
 The project rules live in AGENTS.md so every coding agent reads the same file. They are imported here:
 

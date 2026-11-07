@@ -1,6 +1,8 @@
 # Plume: agent instructions
 
-Plume is a browser-based room airflow and heat simulator. **`SPEC.md` is the source of truth**: read it before changing anything.
+Plume is a room airflow and heat simulator. **`SPEC.md` is the source of truth**: read it before changing anything.
+
+**Target: Windows desktop app.** The code stays a TypeScript web app (it runs in `npm run dev` in Chrome/Edge), later wrapped in a desktop shell (Electron or Tauri, not yet chosen). Don't add browser-only assumptions that a desktop shell would break, and don't add the shell until that decision is made.
 
 ## Status
 
