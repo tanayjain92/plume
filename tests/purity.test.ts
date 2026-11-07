@@ -24,7 +24,10 @@ describe('solver purity', () => {
 
   for (const file of files) {
     it(`${file} has no UI, DOM, worker, random or clock dependencies`, () => {
-      const src = readFileSync(join(SOLVER_DIR, file), 'utf8');
+      // Comments may mention words like window or document; only code counts.
+      const src = readFileSync(join(SOLVER_DIR, file), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/.*$/gm, '');
       const hits = FORBIDDEN.filter(([re]) => re.test(src)).map(([, why]) => why);
       expect(hits).toEqual([]);
     });

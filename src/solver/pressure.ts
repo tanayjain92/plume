@@ -14,27 +14,39 @@ const MIC_SIGMA = 0.25;
  * Pressure Poisson solver on the fluid cells of a MAC grid.
  *
  * Solves A p = b where A is the 7-point negative Laplacian restricted to
- * fluid cells (Neumann at solid faces: a solid neighbor simply drops out of
- * the stencil). p is in velocity units, so the face update is
+ * fluid cells. Solid neighbors drop out of the stencil (Neumann). Open
+ * neighbors (open windows) are Dirichlet: they add to the diagonal and their
+ * fixed pressure, which the caller writes into `p` before solving, moves to
+ * the right-hand side. p is in velocity units, so the face update is
  * u -= p[R] - p[L].
  *
  * Method: conjugate gradient with a Modified Incomplete Cholesky MIC(0)
  * preconditioner (Bridson, "Fluid Simulation for Computer Graphics"), warm
- * started from the previous solution. Internal vectors are Float64 so the
- * tight divergence tolerance is reachable. Each sealed fluid region is a
- * separate pure-Neumann problem, so the right-hand side is made compatible
- * by removing its mean per connected component.
+ * started from the previous solution. Internal vectors are Float64.
+ *
+ * A fluid region with no open cell is a sealed, pure-Neumann problem: it is
+ * only solvable when the net boundary inflow is zero. Its right-hand-side mean
+ * is removed and reported per region as `regionMean`, which the caller treats
+ * as uniform envelope leakage.
  */
 export class PressureSolver {
   readonly n: number;
   readonly fluidList: Int32Array;
-  /** Solution, kept between solves for warm starting. */
+  /** Solution, kept between solves for warm starting. Open cells hold their fixed boundary pressure. */
   readonly p: Float64Array;
+  /** Connected fluid region id per cell (-1 outside fluid). */
+  readonly comp: Int32Array;
+  readonly compSize: Float64Array;
+  /** 1 if the region touches an open (Dirichlet) cell. */
+  readonly compOpen: Uint8Array;
+  /** Mean of b removed from each sealed region by the last solve (0 for open regions). */
+  readonly regionMean: Float64Array;
+  readonly openCells: Int32Array;
 
   private readonly nx: number;
   private readonly nxy: number;
   private readonly diag: Float64Array;
-  private readonly ax: Float64Array; // coefficient to +x neighbor (-1 or 0)
+  private readonly ax: Float64Array; // coefficient to +x fluid neighbor (-1 or 0)
   private readonly ay: Float64Array;
   private readonly az: Float64Array;
   private readonly precon: Float64Array;
@@ -42,11 +54,11 @@ export class PressureSolver {
   private readonly z: Float64Array;
   private readonly s: Float64Array;
   private readonly q: Float64Array;
-  private readonly comp: Int32Array;
-  private readonly compSize: Float64Array;
+  /** Pairs (fluid cell, open neighbor) for moving boundary pressure to the RHS. */
+  private readonly openPairs: Int32Array;
   private readonly compSum: Float64Array;
 
-  constructor(nx: number, ny: number, nz: number, fluid: Uint8Array) {
+  constructor(nx: number, ny: number, nz: number, fluid: Uint8Array, open: Uint8Array = new Uint8Array(fluid.length)) {
     const n = nx * ny * nz;
     const nxy = nx * ny;
     this.n = n;
@@ -64,6 +76,10 @@ export class PressureSolver {
     this.q = new Float64Array(n);
 
     const list: number[] = [];
+    const pairs: number[] = [];
+    const opens: number[] = [];
+    for (let c = 0; c < n; c++) if (open[c]) opens.push(c);
+    this.openCells = Int32Array.from(opens);
     for (let k = 0; k < nz; k++)
       for (let j = 0; j < ny; j++)
         for (let i = 0; i < nx; i++) {
@@ -74,33 +90,38 @@ export class PressureSolver {
           }
           list.push(c);
           let d = 0;
-          if (fluid[c - 1]) d++;
-          if (fluid[c + 1]) d++;
-          if (fluid[c - nx]) d++;
-          if (fluid[c + nx]) d++;
-          if (fluid[c - nxy]) d++;
-          if (fluid[c + nxy]) d++;
+          for (const nb of [c - 1, c + 1, c - nx, c + nx, c - nxy, c + nxy]) {
+            if (fluid[nb]) d++;
+            else if (open[nb]) {
+              d++;
+              pairs.push(c, nb);
+            }
+          }
           this.diag[c] = d;
           if (fluid[c + 1]) this.ax[c] = -1;
           if (fluid[c + nx]) this.ay[c] = -1;
           if (fluid[c + nxy]) this.az[c] = -1;
         }
     this.fluidList = Int32Array.from(list);
+    this.openPairs = Int32Array.from(pairs);
 
     // Connected components of the fluid region (flood fill).
     this.comp = new Int32Array(n).fill(-1);
     const sizes: number[] = [];
+    const hasOpen: number[] = [];
     const stack: number[] = [];
     for (const seed of this.fluidList) {
       if (this.comp[seed] !== -1) continue;
       const id = sizes.length;
       let size = 0;
+      let touchesOpen = 0;
       this.comp[seed] = id;
       stack.push(seed);
       while (stack.length) {
         const c = stack.pop()!;
         size++;
         for (const nb of [c - 1, c + 1, c - nx, c + nx, c - nxy, c + nxy]) {
+          if (open[nb]) touchesOpen = 1;
           if (fluid[nb] && this.comp[nb] === -1) {
             this.comp[nb] = id;
             stack.push(nb);
@@ -108,9 +129,12 @@ export class PressureSolver {
         }
       }
       sizes.push(size);
+      hasOpen.push(touchesOpen);
     }
     this.compSize = Float64Array.from(sizes);
+    this.compOpen = Uint8Array.from(hasOpen);
     this.compSum = new Float64Array(sizes.length);
+    this.regionMean = new Float64Array(sizes.length);
 
     this.buildPreconditioner();
   }
@@ -144,7 +168,7 @@ export class PressureSolver {
     }
   }
 
-  /** out = A x over fluid cells. */
+  /** out = A x over fluid cells (fluid neighbors only; open-cell terms live in the RHS). */
   applyA(x: Float64Array, out: Float64Array): void {
     const { diag, ax, ay, az, nx, nxy, fluidList } = this;
     for (let m = 0; m < fluidList.length; m++) {
@@ -180,18 +204,22 @@ export class PressureSolver {
     }
   }
 
-  /** Subtract the per-component mean over fluid cells. */
-  removeMean(x: Float64Array): void {
-    const { comp, compSize, compSum, fluidList } = this;
+  /** Subtract the per-region mean over fluid cells, for sealed regions only. Returns nothing; means go to `out`. */
+  private removeSealedMean(x: Float64Array, out?: Float64Array): void {
+    const { comp, compSize, compSum, compOpen, fluidList } = this;
     compSum.fill(0);
     for (let m = 0; m < fluidList.length; m++) {
       const c = fluidList[m];
       compSum[comp[c]] += x[c];
     }
+    for (let id = 0; id < compSum.length; id++) {
+      const mean = compOpen[id] ? 0 : compSum[id] / compSize[id];
+      compSum[id] = mean;
+      if (out) out[id] = mean;
+    }
     for (let m = 0; m < fluidList.length; m++) {
       const c = fluidList[m];
-      const id = comp[c];
-      x[c] -= compSum[id] / compSize[id];
+      x[c] -= compSum[comp[c]];
     }
   }
 
@@ -215,20 +243,22 @@ export class PressureSolver {
     return mx;
   }
 
-  /** Scale the warm-start guess (p scales with dt, so a dt change rescales it). */
+  /** Scale the warm-start guess on fluid cells (p scales with dt, so a dt change rescales it). */
   scaleSolution(factor: number): void {
     const { p, fluidList } = this;
     for (let m = 0; m < fluidList.length; m++) p[fluidList[m]] *= factor;
   }
 
   /**
-   * Solve A p = b in place (b is modified: its component means are removed).
-   * Converges when the max-norm residual is <= tol.
+   * Solve A p = b in place (b is modified: open-cell pressures are added and
+   * sealed-region means removed). Open-cell entries of `p` must already hold
+   * their boundary pressure. Converges when the max-norm residual is <= tol.
    */
   solve(b: Float64Array, tol: number, maxIter: number): PressureResult {
-    const { p, r, z, s, q, fluidList } = this;
+    const { p, r, z, s, q, fluidList, openPairs } = this;
     const nf = fluidList.length;
-    this.removeMean(b);
+    for (let m = 0; m < openPairs.length; m += 2) b[openPairs[m]] += p[openPairs[m + 1]];
+    this.removeSealedMean(b, this.regionMean);
 
     this.applyA(p, q);
     for (let m = 0; m < nf; m++) {
@@ -257,7 +287,7 @@ export class PressureSolver {
       }
       res = this.maxAbs(r);
       if (res <= tol) {
-        this.removeMean(p);
+        this.removeSealedMean(p);
         return { iterations: it, residual: res, converged: true };
       }
       this.applyPreconditioner(r, z);
@@ -269,7 +299,7 @@ export class PressureSolver {
         s[c] = z[c] + beta * s[c];
       }
     }
-    this.removeMean(p);
+    this.removeSealedMean(p);
     solverWarn(`pressure solve did not converge in ${maxIter} iterations (residual ${res.toExponential(2)} > ${tol.toExponential(2)})`);
     return { iterations: maxIter, residual: res, converged: false };
   }

@@ -22,11 +22,27 @@ describe('voxelizer', () => {
     for (const c of src.cells) expect(Math.floor(c / (nx * ny))).toBe(1); // first fluid layer
   });
 
-  it('reports devices that are not simulated yet instead of silently dropping them', () => {
+  it('builds every device in the SPEC sample bedroom and reports only phase 3 gaps', () => {
     const { voxels, warnings } = voxelize(PRESETS.find((p) => p.id === 'spec-bedroom')!.scene);
     expect(voxels.heatSources.map((s) => s.id)).toEqual(['person', 'desktop']);
-    expect(warnings.some((w) => w.includes('window_ac'))).toBe(true);
-    expect(warnings.some((w) => w.includes('tower_fan'))).toBe(true);
+    expect(voxels.acUnits.map((a) => a.id)).toEqual(['ac1']);
+    expect(voxels.ports.map((p) => p.id)).toEqual(['ac1:supply', 'ac1:return']);
+    // 0.6 m wide x 0.4 m tall unit: 6 x 2 supply faces above 6 x 2 return faces
+    expect(voxels.ports.map((p) => p.faces.length)).toEqual([12, 12]);
+    expect(voxels.fans.map((f) => f.id)).toEqual(['fan1']);
+    expect(warnings.some((w) => w.includes('ignored'))).toBe(false);
+    expect(warnings.some((w) => w.includes('phase 3'))).toBe(true);
+  });
+
+  it('turns an open window into open cells carrying wind pressure', () => {
+    const scene = structuredClone(PRESETS.find((p) => p.id === 'floor-patch')!.scene);
+    scene.outdoor = { temp: 30, windSpeed: 4, windFrom: 180, solar: 0 }; // wind from the south hits edge 0 head-on
+    scene.openings = [{ id: 'w', type: 'window', room: 'bedroom', edge: 0, offset: 1, width: 1, sill: 0.9, height: 1.2, state: 'open' }];
+    const { voxels } = voxelize(scene);
+    const open = [...voxels.cellType.keys()].filter((c) => voxels.cellType[c] === CellType.Open);
+    expect(open.length).toBe(10 * 12);
+    const expectedPa = 0.7 * 0.5 * 1.2 * 4 * 4;
+    for (const c of open) expect(voxels.openPressure[c]).toBeCloseTo(expectedPa, 4);
   });
 
   it('every preset builds a valid solver', () => {
